@@ -1,0 +1,321 @@
+---
+title: "Factor_analysis_for_score_weights"
+author: "Aditya"
+date: "2025-04-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo   = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+library(jsonlite)
+library(dplyr)
+library(psych)
+library(tidyr)
+library(ggplot2)
+library(pROC)
+library(ModelMetrics)  # for brier
+library(scales)        # for percent_format()
+library(stringr)
+```
+
+## 1. Load & Clean Data
+
+```{r}
+# 1.1 Read leaderboard JSON
+df_leaderboard <- as_tibble(
+  fromJSON("/Users/akn30/leaderboard_analysis/leaderboard_with_info.json")
+)
+
+# 1.2 Read evaluation metrics CSV
+df <- read.csv(
+  "/Users/akn30/leaderboard_analysis/optimal_threshold_results/evaluation_metrics_sensitivity_method.csv",
+  stringsAsFactors = FALSE
+)
+
+# 1.3 Clean team names
+df <- df %>%
+  mutate(
+    team = gsub("output_|outputs_|\\.txt|_|\\s", "", Team) %>% tolower()
+  ) %>%
+  select(-Team)
+# fix typo
+df$team[df$team == "uclpeadiatrics"] <- "uclpaediatrics"
+
+df_leaderboard <- df_leaderboard %>%
+  mutate(
+    team = tolower(team) %>% str_replace_all("\\s+", "")
+  )
+
+# 1.4 Merge and filter (bring in Inference Time & Parsimony Score)
+df <- df %>%
+  left_join(
+    df_leaderboard %>% select(team, `Inference Time`),
+    by = "team"
+  ) %>%
+  distinct() %>%
+  filter(AUC >= 0.5, AUC < 0.99)
+```
+
+## 2. Select & Scale Evaluation Metrics
+
+```{r}
+metrics_cols <- c('F1', 'AUPRC', 'Net.Benefit', 'ECE')
+if (all(c("Compute_1","Compute_2") %in% names(df))) {
+  metrics_cols <- c(metrics_cols, "Compute_1", "Compute_2")
+}
+
+df_metrics <- df %>%
+  select(all_of(metrics_cols)) %>%
+  drop_na()
+
+# scale development metrics
+# 2.x Compute Inference Time scaling separately (excluded from factor analysis)
+# scale development metrics
+scaled_metrics <- scale(df_metrics)
+scale_params <- list(
+  center = attr(scaled_metrics, "scaled:center"),
+  scale  = attr(scaled_metrics, "scaled:scale")
+)
+i_center_dev    <- mean(df$`Inference Time`, na.rm = TRUE)
+i_scale_dev     <- sd(df$`Inference Time`, na.rm = TRUE)
+# append to scale_params
+scale_params$center["Inference Time"] <- i_center_dev
+scale_params$scale["Inference Time"]  <- i_scale_dev
+
+# === SAVE SCALE PARAMETERS ===
+write_json(
+  scale_params,
+  "/Users/aditya/leaderboard_analysis/scale_params.json",
+  pretty = TRUE, auto_unbox = TRUE
+)
+df_scale_params <- tibble(
+  feature = names(scale_params$center),
+  center  = scale_params$center,
+  scale   = scale_params$scale
+)
+write.csv(
+  df_scale_params,
+  "/Users/aditya/leaderboard_analysis/scale_params.csv",
+  row.names = FALSE
+)
+```
+
+
+
+```{r}
+# 3.1 KMO test
+kmo <- KMO(scaled_metrics)
+print(kmo)
+
+# 3.2 Extract 1 factor
+fa_result <- fa(
+  scaled_metrics,
+  nfactors = 1,
+  rotate   = "varimax",
+  scores   = "regression"
+)
+fa.diagram(fa_result)
+
+# 3.3 Save loadings matrix
+loadings_matrix <- as.matrix(fa_result$loadings)  # (n_metrics × 1)
+write.csv(
+  loadings_matrix,
+  "/Users/aditya/leaderboard_analysis/fa_factor_loadings_sen.csv",
+  row.names = TRUE
+)
+write_json(
+  as.list(loadings_matrix[,1]),
+  "/Users/aditya/leaderboard_analysis/factor_loadings.json",
+  pretty = TRUE, auto_unbox = TRUE
+)
+
+# 3.4 Save factor‐based weights (exclude Inference Time from factor analysis)
+factor_weights <- tibble(
+  feature = rownames(loadings_matrix),
+  weight  = loadings_matrix[,1]
+)
+# append fixed parsimony weight (5%) and inference time weight (5%)
+parsimony_weight <- 0.05
+inference_weight <- 0.05
+factor_weights <- bind_rows(
+  factor_weights,
+  tibble(feature = "Parsimony Score",   weight = parsimony_weight),
+  tibble(feature = "Inference Time",     weight = inference_weight)
+)
+# overwrite CSV + JSON
+write.csv(
+  factor_weights,
+  "/Users/aditya/leaderboard_analysis/factor_weights.csv",
+  row.names = FALSE
+)
+write_json(
+  factor_weights,
+  "/Users/aditya/leaderboard_analysis/factor_weights.json",
+  pretty = TRUE, auto_unbox = TRUE
+)
+```
+
+```{r score_dev_data}
+library(jsonlite)
+library(dplyr)
+
+# assume df and metrics_cols and scale_params already exist in your environment
+
+# 1. Assemble development data
+dev_data <- df %>% 
+  select(team, all_of(metrics_cols), `Inference Time`)
+
+# 2. Standardize factor‐analysis metrics
+scaled_dev_metrics <- scale(
+  select(dev_data, all_of(metrics_cols)),
+  center = scale_params$center[metrics_cols],
+  scale  = scale_params$scale[metrics_cols]
+)
+
+# 3. Standardize inference time
+inf_scaled <- (dev_data$`Inference Time` - scale_params$center["Inference Time"]) /
+               scale_params$scale["Inference Time"]
+
+inf_speed <- -inf_scaled
+# 4. Load factor‐analysis loadings and validation params
+factor_loadings <- fromJSON("/Users/aditya/leaderboard_analysis/factor_loadings.json")
+val_params       <- fromJSON("/Users/aditya/leaderboard_analysis/validation_scaling_params.json")
+
+# 5. Compute raw factor score
+raw_factor_dev <- as.vector(scaled_dev_metrics %*% unlist(factor_loadings))
+
+# 6. Combine with parsimony (parsimony=1 ⇒ inv_par=0) & inference weight
+wp <- 0.05; wi <- 0.05
+raw_combo_dev <- raw_factor_dev * (1 - wp - wi) + (1 - 1) * wp + inf_speed * wi
+
+# 7. Compute logistic squash parameters on raw_combo_dev
+o_bs <- raw_combo_dev  # alias
+mu_dev   <- median(o_bs)
+tau_dev  <- sd(o_bs) / 2
+
+# 8. Compute various scaled versions of raw_combo_dev
+# 8.1 Logistic-scaled (0,1)
+logistic_scale <- 1 / (1 + exp(-(raw_combo_dev - mu_dev) / tau_dev))
+# 8.2 Min–Max scaling to [0,1]
+minmax_scale <- (raw_combo_dev - min(raw_combo_dev)) / (max(raw_combo_dev) - min(raw_combo_dev))
+# 8.3 Z‑score standardization
+zscore_scale <- (raw_combo_dev - mean(raw_combo_dev)) / sd(raw_combo_dev)
+
+# 8. Compute Z‑score standardization on raw_combo_dev as final score
+mu_z <- mean(raw_combo_dev)
+sd_z <- sd(raw_combo_dev)
+#final_score_dev <- (raw_combo_dev - mu_z) / sd_z
+
+# 9. Save z-score parameters for Python evaluation
+z_params <- list(
+  center = mu_z,
+  scale  = sd_z
+)
+write_json(
+  z_params,
+  "/Users/aditya/leaderboard_analysis/zscore_params.json",
+  auto_unbox = TRUE,
+  pretty = TRUE
+)
+# 9. Save results
+dev_scores <- tibble(
+  team           = dev_data$team,
+  raw_score      = raw_combo_dev,
+  logistic_score = logistic_scale,
+  minmax_score   = minmax_scale,
+  zscore_score   = zscore_scale
+)
+write.csv(
+  dev_scores,
+  "/Users/aditya/leaderboard_analysis/development_scores.csv",
+  row.names = FALSE
+)
+
+# 10. Merge with original df to compare metrics
+comparison_df <- df %>%
+  left_join(dev_scores, by = "team") %>%
+  select(team, all_of(metrics_cols), TP, FP, FN, TN, raw_score, logistic_score, minmax_score, zscore_score)
+
+# 11. Show head sorted by logistic_score
+glimpse_df <- comparison_df %>%
+  arrange(desc(logistic_score)) %>%
+  head()
+print(glimpse_df)
+
+# 12. Plot density of different scaling methods
+plot_df <- tibble(
+  raw       = raw_combo_dev,
+  logistic  = logistic_scale,
+  minmax    = minmax_scale,
+  zscore    = zscore_scale
+)
+
+plot_df %>%
+  pivot_longer(everything(), names_to = "method", values_to = "score") %>%
+  ggplot(aes(x = score, color = method)) +
+    geom_density(size = 1) +
+    theme_minimal() +
+    labs(
+      title    = "Comparison of Scaling Methods on Development Weighted Scores",
+      x        = "Scaled Score",
+      y        = "Density"
+    )
+
+```
+
+## 4. Validation Using Z-score Weighted Scoring
+
+```{r validation_dev_scoring}
+library(jsonlite)
+library(dplyr)
+
+# 4.1 Load data to score
+new_data <- read.csv(
+  "/Users/akn30/leaderboard_analysis/evaluation_metrics_sensitivity_method.csv",
+  stringsAsFactors = FALSE
+)
+
+# 4.2 Compute raw weighted score exactly as in development
+#   - factor_loadings, scale_params, parsimony_weight (wp) and inference_weight (wi) are assumed defined above
+metric_names <- names(factor_loadings)
+scaled_new   <- scale(
+  select(new_data, all_of(metric_names)),
+  center = scale_params$center[metric_names],
+  scale  = scale_params$scale[metric_names]
+)
+raw_factor   <- as.vector(scaled_new %*% unlist(factor_loadings))
+
+# use parsimony_score if present, otherwise assume 1
+parsimony    <- if("parsimony_score" %in% names(new_data)) new_data$parsimony_score else rep(1, nrow(new_data))
+inv_parsimony <- 1 - parsimony
+
+# normalize inference time
+i_norm <- (new_data$inference_time - scale_params$center["Inference Time"]) /
+          scale_params$scale["Inference Time"]
+
+# raw combo
+raw_combo <- raw_factor * (1 - wp - wi) + inv_parsimony * wp + i_norm * wi
+
+# 4.3 Apply z-score transform using saved parameters
+zparams <- fromJSON("/Users/aditya/leaderboard_analysis/zscore_params.json")
+final_z <- (raw_combo - zparams$center) / zparams$scale
+
+# 4.4 Save scored results
+new_data_scored <- new_data %>%
+  mutate(
+    raw_score   = raw_combo,
+    final_score = final_z
+  )
+write.csv(
+  new_data_scored,
+  "/Users/aditya/leaderboard_analysis/final_scores_new_full.csv",
+  row.names = FALSE
+)
+
+head(new_data_scored)
+
+```
