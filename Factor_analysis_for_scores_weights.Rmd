@@ -27,12 +27,12 @@ library(stringr)
 ```{r}
 # 1.1 Read leaderboard JSON
 df_leaderboard <- as_tibble(
-  fromJSON("/Users/akn30/leaderboard_analysis/leaderboard_with_info.json")
+  fromJSON("leaderboard_with_info.json")
 )
 
 # 1.2 Read evaluation metrics CSV
 df <- read.csv(
-  "/Users/akn30/leaderboard_analysis/optimal_threshold_results/evaluation_metrics_sensitivity_method.csv",
+  "optimal_threshold_results/evaluation_metrics_sensitivity_method.csv",
   stringsAsFactors = FALSE
 )
 
@@ -89,7 +89,7 @@ scale_params$scale["Inference Time"]  <- i_scale_dev
 # === SAVE SCALE PARAMETERS ===
 write_json(
   scale_params,
-  "/Users/aditya/leaderboard_analysis/scale_params.json",
+  "scale_params.json",
   pretty = TRUE, auto_unbox = TRUE
 )
 df_scale_params <- tibble(
@@ -99,7 +99,7 @@ df_scale_params <- tibble(
 )
 write.csv(
   df_scale_params,
-  "/Users/aditya/leaderboard_analysis/scale_params.csv",
+  "scale_params.csv",
   row.names = FALSE
 )
 ```
@@ -124,12 +124,12 @@ fa.diagram(fa_result)
 loadings_matrix <- as.matrix(fa_result$loadings)  # (n_metrics × 1)
 write.csv(
   loadings_matrix,
-  "/Users/aditya/leaderboard_analysis/fa_factor_loadings_sen.csv",
+  "fa_factor_loadings_sen.csv",
   row.names = TRUE
 )
 write_json(
   as.list(loadings_matrix[,1]),
-  "/Users/aditya/leaderboard_analysis/factor_loadings.json",
+  "factor_loadings.json",
   pretty = TRUE, auto_unbox = TRUE
 )
 
@@ -149,12 +149,12 @@ factor_weights <- bind_rows(
 # overwrite CSV + JSON
 write.csv(
   factor_weights,
-  "/Users/aditya/leaderboard_analysis/factor_weights.csv",
+  "factor_weights.csv",
   row.names = FALSE
 )
 write_json(
   factor_weights,
-  "/Users/aditya/leaderboard_analysis/factor_weights.json",
+  "factor_weights.json",
   pretty = TRUE, auto_unbox = TRUE
 )
 ```
@@ -182,8 +182,8 @@ inf_scaled <- (dev_data$`Inference Time` - scale_params$center["Inference Time"]
 
 inf_speed <- -inf_scaled
 # 4. Load factor‐analysis loadings and validation params
-factor_loadings <- fromJSON("/Users/aditya/leaderboard_analysis/factor_loadings.json")
-val_params       <- fromJSON("/Users/aditya/leaderboard_analysis/validation_scaling_params.json")
+factor_loadings <- fromJSON("factor_loadings.json")
+val_params       <- fromJSON("validation_scaling_params.json")
 
 # 5. Compute raw factor score
 raw_factor_dev <- as.vector(scaled_dev_metrics %*% unlist(factor_loadings))
@@ -217,7 +217,7 @@ z_params <- list(
 )
 write_json(
   z_params,
-  "/Users/aditya/leaderboard_analysis/zscore_params.json",
+  "zscore_params.json",
   auto_unbox = TRUE,
   pretty = TRUE
 )
@@ -231,7 +231,7 @@ dev_scores <- tibble(
 )
 write.csv(
   dev_scores,
-  "/Users/aditya/leaderboard_analysis/development_scores.csv",
+  "development_scores.csv",
   row.names = FALSE
 )
 
@@ -275,7 +275,7 @@ library(dplyr)
 
 # 4.1 Load data to score
 new_data <- read.csv(
-  "/Users/akn30/leaderboard_analysis/evaluation_metrics_sensitivity_method.csv",
+  "evaluation_metrics_sensitivity_method.csv",
   stringsAsFactors = FALSE
 )
 
@@ -301,7 +301,7 @@ i_norm <- (new_data$inference_time - scale_params$center["Inference Time"]) /
 raw_combo <- raw_factor * (1 - wp - wi) + inv_parsimony * wp + i_norm * wi
 
 # 4.3 Apply z-score transform using saved parameters
-zparams <- fromJSON("/Users/aditya/leaderboard_analysis/zscore_params.json")
+zparams <- fromJSON("zscore_params.json")
 final_z <- (raw_combo - zparams$center) / zparams$scale
 
 # 4.4 Save scored results
@@ -312,7 +312,7 @@ new_data_scored <- new_data %>%
   )
 write.csv(
   new_data_scored,
-  "/Users/aditya/leaderboard_analysis/final_scores_new_full.csv",
+  "final_scores_new_full.csv",
   row.names = FALSE
 )
 
