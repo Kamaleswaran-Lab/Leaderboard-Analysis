@@ -6,7 +6,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.gridspec import GridSpec
-from matplotlib.ticker import PercentFormatter
+from matplotlib.ticker import FuncFormatter
+from matplotlib.lines import Line2D
+from matplotlib.colors import to_rgb, to_hex
 from pathlib import Path
 
 
@@ -20,7 +22,17 @@ FIGURES_DIR.mkdir(exist_ok=True, parents=True)
 
 
 plt.style.use("seaborn-v0_8-paper")
-sns.set_palette("husl")
+
+
+def pastelize(color, blend: float = 0.4) -> str:
+    """Blend a color with white to produce a pastel variant."""
+    rgb = np.array(to_rgb(color))
+    pastel_rgb = rgb + (1 - rgb) * blend
+    return to_hex(pastel_rgb)
+
+
+BASE_PALETTE = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#F0E442", "#56B4E9"]
+sns.set_palette([pastelize(color, 0.45) for color in BASE_PALETTE])
 plt.rcParams["figure.dpi"] = 300
 plt.rcParams["savefig.dpi"] = 300
 plt.rcParams["font.size"] = 10
@@ -75,51 +87,6 @@ def compute_treat_all_nb(df: pd.DataFrame) -> np.ndarray:
     return treat_all.to_numpy()
 
 
-def filter_nb_outliers_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Return subset with extreme net benefit rows removed."""
-    if "Net Benefit" not in df.columns or df["Net Benefit"].dropna().empty:
-        return df
-    nb_series = df["Net Benefit"].dropna()
-    q1, q3 = np.percentile(nb_series, [25, 75])
-    iqr = q3 - q1
-    lower_bound = q1 - 3 * iqr
-    upper_bound = q3 + 3 * iqr
-    mask = (df["Net Benefit"] >= lower_bound) & (df["Net Benefit"] <= upper_bound)
-    return df[mask]
-
-
-def compute_treat_all_series(df: pd.DataFrame) -> pd.Series:
-    """Compute treat-all NB aligned with dataframe entries."""
-    required_cols = {"TP", "FP", "FN", "TN", "Optimal Threshold"}
-    if not required_cols.issubset(df.columns):
-        return pd.Series(dtype=float)
-    totals = df["TP"] + df["FP"] + df["FN"] + df["TN"]
-    totals = totals.replace(0, np.nan)
-    prevalence = (df["TP"] + df["FN"]) / totals
-    pt = df["Optimal Threshold"].clip(1e-6, 1 - 1e-6)
-    treat_all = prevalence - (1 - prevalence) * (pt / (1 - pt))
-    return treat_all.replace([np.inf, -np.inf], np.nan)
-
-
-def aggregate_dca_curve(df: pd.DataFrame, threshold_bins_pct: np.ndarray) -> pd.DataFrame:
-    """Aggregate decision-curve net benefit across threshold bins."""
-    cols = ["Optimal Threshold", "Net Benefit", "TP", "FP", "FN", "TN"]
-    df_curve = df[cols].dropna(subset=["Optimal Threshold", "Net Benefit"]).copy()
-    if df_curve.empty:
-        return pd.DataFrame(columns=["threshold_pct", "net_benefit"])
-    df_curve = df_curve[(df_curve["Optimal Threshold"] > 0) & (df_curve["Optimal Threshold"] < 1)]
-    df_curve = filter_nb_outliers_df(df_curve)
-    if df_curve.empty:
-        return pd.DataFrame(columns=["threshold_pct", "net_benefit"])
-    df_curve["threshold_pct"] = df_curve["Optimal Threshold"] * 100
-    df_curve["bin"] = pd.cut(df_curve["threshold_pct"], bins=threshold_bins_pct, include_lowest=True)
-    curve_stats = df_curve.groupby("bin", observed=False).agg(
-        threshold_pct=("threshold_pct", "mean"),
-        net_benefit=("Net Benefit", "median"),
-    ).dropna()
-    return curve_stats
-
-
 def generate_figure1() -> Path:
     """Create Figure 1 and return the output path."""
     print("\n📈 Creating Figure 1: Study Design and Participant Flow...")
@@ -136,8 +103,9 @@ def generate_figure1() -> Path:
     prelim_f1["Team_clean"] = prelim_f1["Team"].apply(extract_team_name)
     prelim_youden["Team_clean"] = prelim_youden["Team"].apply(extract_team_name)
 
-    fig1 = plt.figure(figsize=(18, 18))
-    gs1 = GridSpec(4, 4, figure=fig1, hspace=0.32, wspace=0.35)
+    fig1 = plt.figure(figsize=(17, 15))
+    gs1 = GridSpec(3, 4, figure=fig1, hspace=0.42, wspace=0.36, width_ratios=[1.9, 0.9, 0.9, 0.9])
+    fig1.subplots_adjust(right=0.85)
 
     # Panel A
     ax1a = fig1.add_subplot(gs1[0, 0])
@@ -162,7 +130,7 @@ def generate_figure1() -> Path:
     categories = ["Preliminary", "Dummy/Validation", "Final"]
     total_values = [n_prelim, n_valid, n_final_subs]
     unique_values = [n_prelim_teams, n_valid_teams, n_final_teams]
-    colors_bar = ["#3498DB", "#2ECC71", "#9B59B6"]
+    colors_bar = [pastelize("#0072B2", 0.5), pastelize("#009E73", 0.5), pastelize("#D55E00", 0.5)]
     bars = ax1a.bar(categories, total_values, color=colors_bar, alpha=0.7, edgecolor="black", linewidth=1.5)
 
     for bar, total, unique in zip(bars, total_values, unique_values):
@@ -191,10 +159,19 @@ def generate_figure1() -> Path:
     ax1b = fig1.add_subplot(gs1[0, 1:])
     sens_thresholds = [0.70, 0.75, 0.80, 0.85, 0.90]
     methods_data = {"Sensitivity": prelim_sens, "Youden": prelim_youden, "F1 Opt": prelim_f1}
-    method_colors = {"Sensitivity": "#1F77B4", "Youden": "#E74C3C", "F1 Opt": "#2ECC71"}
+    method_colors = {"Sensitivity": pastelize("#0072B2", 0.4), "Youden": pastelize("#D55E00", 0.4), "F1 Opt": pastelize("#009E73", 0.4)}
 
+    method_offsets = {"Sensitivity": -0.08, "Youden": 0.0, "F1 Opt": 0.08}
     fractions_by_method = {}
     nb_by_method = {}
+    nb_lower_bounds = {}
+
+    for method, df_method in methods_data.items():
+        nb_method_vals = df_method["Net Benefit"].dropna().values
+        if nb_method_vals.size > 0:
+            nb_lower_bounds[method] = np.percentile(nb_method_vals, 5)
+        else:
+            nb_lower_bounds[method] = None
 
     for method, df_method in methods_data.items():
         fractions = []
@@ -206,8 +183,16 @@ def generate_figure1() -> Path:
             if len(subset) > 0:
                 subset_nb = subset[["Net Benefit"]].dropna()
                 if not subset_nb.empty:
-                    nb_filtered = remove_outliers_nb(subset_nb["Net Benefit"].values)
-                    nb_values.append(np.median(nb_filtered) if nb_filtered.size > 0 else np.median(subset_nb["Net Benefit"]))
+                    nb_values_raw = subset_nb["Net Benefit"].values
+                    nb_filtered = remove_outliers_nb(nb_values_raw)
+                    lower_bound = nb_lower_bounds.get(method)
+                    if lower_bound is not None:
+                        filtered_custom = nb_filtered[nb_filtered >= lower_bound]
+                        if filtered_custom.size > 0:
+                            nb_filtered = filtered_custom
+                    nb_filtered = nb_filtered[np.isfinite(nb_filtered)]
+                    median_nb = np.median(nb_filtered) if nb_filtered.size > 0 else np.nan
+                    nb_values.append(median_nb)
                 else:
                     nb_values.append(np.nan)
             else:
@@ -222,32 +207,23 @@ def generate_figure1() -> Path:
 
     for method, fractions in fractions_by_method.items():
         color = method_colors[method]
-        line, = ax1b.plot(x_positions, fractions, marker="o", linewidth=2.2, color=color, label=f"{method}: fraction ≥ threshold")
+        x_positions_offset = x_positions + method_offsets.get(method, 0.0)
+        line, = ax1b.plot(x_positions_offset, fractions, marker="o", linewidth=2.2, color=color, label=f"{method}: fraction ≥ threshold")
         fraction_lines.append(line)
-        ax1b.fill_between(x_positions, fractions, color=color, alpha=0.10)
-        ax1b.scatter(x_positions[chosen_idx], fractions[chosen_idx], color=color, s=70, edgecolor="black", zorder=5)
-        ax1b.annotate(
-            f"{method}: {fractions[chosen_idx] * 100:.0f}%",
-            xy=(x_positions[chosen_idx], fractions[chosen_idx]),
-            xytext=(5, 10),
-            textcoords="offset points",
-            fontsize=8,
-            color=color,
-            fontweight="bold",
-            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8),
-        )
+        ax1b.fill_between(x_positions_offset, fractions, color=pastelize("#4D4D4D", 0.75), alpha=0.35, zorder=1)
+        ax1b.scatter(x_positions_offset[chosen_idx], fractions[chosen_idx], color=color, s=80, edgecolor="black", zorder=5)
 
-    ax1b.set_ylabel("Fraction of Models Meeting Sensitivity Threshold", fontweight="bold")
+    ax1b.set_ylabel("Fraction of models", fontweight="bold")
     ax1b.set_ylim(0, 1.05)
+    ax1b.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:.1f}"))
 
     ax1b_secondary = ax1b.twinx()
-    nb_percent_all = []
     for method, nb_vals in nb_by_method.items():
         color = method_colors[method]
         nb_percent = nb_vals * 100.0
-        nb_percent_all.append(nb_percent[np.isfinite(nb_percent)])
+        x_positions_offset = x_positions + method_offsets.get(method, 0.0)
         line_nb, = ax1b_secondary.plot(
-            x_positions,
+            x_positions_offset,
             nb_percent,
             linestyle="--",
             linewidth=1.8,
@@ -257,32 +233,18 @@ def generate_figure1() -> Path:
         )
         nb_lines.append(line_nb)
 
-    if nb_percent_all:
-        nb_concat = np.hstack(nb_percent_all)
-        nb_range = np.nanmax(nb_concat) - np.nanmin(nb_concat)
-        lower = np.nanmin(nb_concat) - 0.1 * nb_range if nb_range > 0 else np.nanmin(nb_concat) - 1
-        upper = np.nanmax(nb_concat) + 0.1 * nb_range if nb_range > 0 else np.nanmax(nb_concat) + 1
-        ax1b_secondary.set_ylim(lower, upper)
-    else:
-        ax1b_secondary.set_ylim(-5, 5)
+    ax1b_secondary.set_ylim(-20, 5)
+    ax1b_secondary.set_yticks([-20, -15, -10, -5, 0, 5])
 
-    ax1b_secondary.set_ylabel("Median Net Benefit (%)", fontweight="bold")
-    ax1b_secondary.yaxis.set_major_formatter(PercentFormatter(xmax=100, decimals=1))
+    ax1b_secondary.set_ylabel("Median Net Benefit (percent)", fontweight="bold")
+    ax1b_secondary.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:.0f}"))
+    ax1b_secondary.axhline(0, color="gray", linestyle=":", linewidth=1)
 
-    ax1b.axvline(x=chosen_idx, color="#34495E", linestyle="--", linewidth=2.5, alpha=0.7)
-    ax1b.text(
-        0.02,
-        0.92,
-        "Vertical line marks ≥80% sensitivity requirement\nCompare coverage fractions across methods",
-        transform=ax1b.transAxes,
-        fontsize=8,
-        fontweight="bold",
-        bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor="#34495E", alpha=0.85),
-    )
+    ax1b.axvline(x=chosen_idx, color="#34495E", linestyle="--", linewidth=2.0, alpha=0.6)
 
     ax1b.set_xticks(x_positions)
-    ax1b.set_xticklabels([f"{int(t * 100)}%" for t in sens_thresholds])
-    ax1b.set_xlabel("Sensitivity Threshold Requirement", fontweight="bold")
+    ax1b.set_xticklabels([f"{int(t * 100)}" for t in sens_thresholds])
+    ax1b.set_xlabel("Sensitivity Threshold Requirement (percent)", fontweight="bold")
     ax1b.set_title(
         "B. Why Require ≥80% Sensitivity?\nCoverage vs. utility across threshold optimization methods",
         fontweight="bold",
@@ -293,12 +255,38 @@ def generate_figure1() -> Path:
     ax1b.spines["right"].set_visible(False)
     ax1b_secondary.spines["top"].set_visible(False)
 
-    handles = fraction_lines + nb_lines
-    labels = [h.get_label() for h in handles]
-    ax1b.legend(handles, labels, loc="upper right", fontsize=8, framealpha=0.9)
+    legend_handles = []
+    for method in methods_data.keys():
+        legend_handles.append(
+            Line2D([0], [0], color=method_colors[method], marker="o", linestyle="-", linewidth=2.2, label=f"{method}: coverage")
+        )
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                color=method_colors[method],
+                marker="s",
+                linestyle="--",
+                linewidth=1.8,
+                dashes=(4, 2),
+                label=f"{method}: median NB",
+            )
+        )
+
+    ax1b.legend(
+        legend_handles,
+        [handle.get_label() for handle in legend_handles],
+        loc="upper left",
+        bbox_to_anchor=(0.73, 0.8),
+        fontsize=8,
+        framealpha=0.9,
+        borderaxespad=0.4,
+        handlelength=2.5,
+    )
+    ax1b.margins(x=0.05)
 
     # Panel C
-    ax1c = fig1.add_subplot(gs1[1, 0:2])
+    ax1c = fig1.add_subplot(gs1[1, 0])
     methods_nb = {
         "Sensitivity": prelim_sens["Net Benefit"].dropna().values,
         "Youden": prelim_youden["Net Benefit"].dropna().values,
@@ -333,7 +321,7 @@ def generate_figure1() -> Path:
 
     ax1c.set_xticks(positions)
     ax1c.set_xticklabels(list(methods_nb_clean.keys()))
-    ax1c.set_ylabel("Net Benefit (%)", fontweight="bold")
+    ax1c.set_ylabel("Net Benefit (percent)", fontweight="bold")
     ax1c.set_title("C. Net Benefit by Threshold Method\n(Preliminary Phase)", fontweight="bold", fontsize=13)
     ax1c.axhline(y=0, color="red", linestyle="--", linewidth=1, alpha=0.5, label="Treat-none baseline")
     if treat_all_baseline is not None:
@@ -343,71 +331,21 @@ def generate_figure1() -> Path:
             color="#8E44AD",
             linestyle=":",
             linewidth=2,
-            label=f"Treat-all baseline (median NB = {treat_all_percent:.1f}%)",
+            label=f"Treat-all baseline (median NB = {treat_all_percent:.1f} percent)",
         )
     ax1c.legend(loc="best", fontsize=8)
-    ax1c.yaxis.set_major_formatter(PercentFormatter(xmax=100, decimals=0))
+    ax1c.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:.0f}"))
     ax1c.grid(True, alpha=0.3, axis="y")
     ax1c.spines["top"].set_visible(False)
     ax1c.spines["right"].set_visible(False)
 
     # Panel D
-    ax1d = fig1.add_subplot(gs1[1, 2:])
-    threshold_bins_pct = np.linspace(5, 95, 19)
-    for method, df_method in methods_data.items():
-        curve = aggregate_dca_curve(df_method, threshold_bins_pct)
-        if not curve.empty:
-            ax1d.plot(
-                curve["threshold_pct"],
-                curve["net_benefit"] * 100,
-                marker="o",
-                linewidth=2,
-                color=method_colors[method],
-                label=f"{method} net benefit",
-            )
-
-    prelim_for_dca = filter_nb_outliers_df(
-        prelim_sens[["Optimal Threshold", "TP", "FP", "FN", "TN", "Net Benefit"]]
-        .dropna(subset=["Optimal Threshold", "Net Benefit"])
-        .copy()
-    )
-    if not prelim_for_dca.empty:
-        treat_all_series = compute_treat_all_series(prelim_for_dca)
-        prelim_for_dca["Treat All NB"] = treat_all_series
-        prelim_for_dca = prelim_for_dca.dropna(subset=["Treat All NB"])
-        prelim_for_dca["threshold_pct"] = prelim_for_dca["Optimal Threshold"] * 100
-        prelim_for_dca["bin"] = pd.cut(prelim_for_dca["threshold_pct"], bins=threshold_bins_pct, include_lowest=True)
-        treat_all_curve = prelim_for_dca.groupby("bin", observed=False).agg(
-            threshold_pct=("threshold_pct", "mean"),
-            treat_all=("Treat All NB", "median"),
-        ).dropna()
-        if not treat_all_curve.empty:
-            ax1d.plot(
-                treat_all_curve["threshold_pct"],
-                treat_all_curve["treat_all"] * 100,
-                linestyle="--",
-                linewidth=2,
-                color="#8E44AD",
-                label="Treat-all strategy",
-            )
-
-    ax1d.axhline(0, color="red", linestyle="--", linewidth=1, alpha=0.6, label="Treat-none strategy")
-    ax1d.set_xlabel("Threshold Probability (%)", fontweight="bold")
-    ax1d.set_ylabel("Net Benefit (%)", fontweight="bold")
-    ax1d.set_title("D. Decision Curve Analysis\n(Aggregated across submissions)", fontweight="bold", fontsize=13)
-    ax1d.yaxis.set_major_formatter(PercentFormatter(xmax=100, decimals=0))
-    ax1d.grid(True, alpha=0.3)
-    ax1d.spines["top"].set_visible(False)
-    ax1d.spines["right"].set_visible(False)
-    ax1d.legend(loc="best", fontsize=8, framealpha=0.9)
-
-    # Panel E
-    ax1e = fig1.add_subplot(gs1[2, 0:4])
+    ax1d = fig1.add_subplot(gs1[1, 1:4])
 
     prelim_sens["Precision"] = prelim_sens["TP"] / (prelim_sens["TP"] + prelim_sens["FP"])
     prelim_sens["FPR"] = prelim_sens["FP"] / (prelim_sens["FP"] + prelim_sens["TN"])
-    metrics_to_plot = ["F1", "Net Benefit", "ECE", "AUPRC", "AUC", "Sensitivity", "Specificity", "Precision"]
-    metrics_display = ["F1", "Net Benefit", "ECE", "AUPRC", "AUC", "Sensitivity", "Specificity", "Precision"]
+    metrics_to_plot = ["F1", "ECE", "AUPRC", "AUC", "Sensitivity", "Specificity", "Precision"]
+    metrics_display = ["F1", "ECE", "AUPRC", "AUC", "Sensitivity", "Specificity", "Precision"]
 
     def remove_outliers_iqr_series(series: pd.Series) -> pd.Series:
         q1, q3 = series.quantile([0.25, 0.75])
@@ -421,17 +359,19 @@ def generate_figure1() -> Path:
     metrics_data = []
     for metric in metrics_to_plot:
         if metric in prelim_sens.columns:
-            clean_data = remove_outliers_iqr_series(prelim_sens[metric].dropna())
+            series = prelim_sens[metric].dropna()
+            clean_data = remove_outliers_iqr_series(series)
             metrics_data.append(clean_data.values)
         else:
             metrics_data.append([])
 
     positions = list(range(len(metrics_display)))
-    parts = ax1e.violinplot(metrics_data, positions=positions, showmeans=True, showmedians=True, widths=0.7)
+    parts = ax1d.violinplot(metrics_data, positions=positions, showmeans=True, showmedians=True, widths=0.7)
 
-    colors_gradient = plt.cm.Set3(np.linspace(0, 1, len(metrics_display)))
+    base_metric_colors = sns.color_palette("colorblind", len(metrics_display))
+    pastel_metric_colors = [pastelize(color, 0.5) for color in base_metric_colors]
     for i, pc in enumerate(parts["bodies"]):
-        pc.set_facecolor(colors_gradient[i])
+        pc.set_facecolor(pastel_metric_colors[i])
         pc.set_alpha(0.8)
         pc.set_edgecolor("black")
         pc.set_linewidth(1.5)
@@ -442,18 +382,18 @@ def generate_figure1() -> Path:
             vp.set_edgecolor("black")
             vp.set_linewidth(1.5)
 
-    ax1e.set_xticks(positions)
-    ax1e.set_xticklabels(metrics_display, rotation=45, ha="right")
-    ax1e.set_ylabel("Metric Value", fontweight="bold")
-    ax1e.set_title("E. Key Performance Metrics Distribution\n(Preliminary Phase, Outliers Removed)", fontweight="bold", fontsize=13)
-    ax1e.grid(True, alpha=0.3, axis="y")
-    ax1e.spines["top"].set_visible(False)
-    ax1e.spines["right"].set_visible(False)
-    ax1e.axhline(y=0, color="gray", linestyle="--", linewidth=1, alpha=0.5)
-    ax1e.axhline(y=1, color="gray", linestyle="--", linewidth=1, alpha=0.5)
+    ax1d.set_xticks(positions)
+    ax1d.set_xticklabels(metrics_display, rotation=45, ha="right")
+    ax1d.set_ylabel("Metric Value", fontweight="bold")
+    ax1d.set_title("D. Key Performance Metrics Distribution\n(Preliminary Phase, Outliers Removed)", fontweight="bold", fontsize=13)
+    ax1d.grid(True, alpha=0.3, axis="y")
+    ax1d.spines["top"].set_visible(False)
+    ax1d.spines["right"].set_visible(False)
+    ax1d.axhline(y=0, color="gray", linestyle="--", linewidth=1, alpha=0.5)
+    ax1d.axhline(y=1, color="gray", linestyle="--", linewidth=1, alpha=0.5)
 
-    # Panel F
-    ax1f = fig1.add_subplot(gs1[3, 0:4])
+    # Panel E
+    ax1e = fig1.add_subplot(gs1[2, 0:4])
     metrics_for_corr = ["AUC", "AUPRC", "F1", "Sensitivity", "Specificity", "Precision", "Net Benefit", "ECE"]
     corr_data = prelim_sens[metrics_for_corr].corr()
     selected_metrics = ["Net Benefit", "F1", "AUPRC", "ECE", "Sensitivity"]
@@ -463,10 +403,10 @@ def generate_figure1() -> Path:
 
     from matplotlib.patches import Rectangle
 
-    im = ax1f.imshow(corr_reordered.abs(), cmap="RdYlGn_r", aspect="auto", vmin=0, vmax=1)
+    im = ax1e.imshow(corr_reordered.abs(), cmap="RdYlGn_r", aspect="auto", vmin=0, vmax=1)
     for i in range(len(metric_order)):
         for j in range(len(metric_order)):
-            ax1f.text(
+            ax1e.text(
                 j,
                 i,
                 f"{corr_reordered.iloc[i, j]:.2f}",
@@ -480,17 +420,17 @@ def generate_figure1() -> Path:
     for i in range(len(selected_metrics)):
         for j in range(len(selected_metrics)):
             rect = Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False, edgecolor="blue", linewidth=3)
-            ax1f.add_patch(rect)
+            ax1e.add_patch(rect)
 
-    ax1f.set_xticks(np.arange(len(metric_order)))
-    ax1f.set_yticks(np.arange(len(metric_order)))
-    ax1f.set_xticklabels(metric_order, rotation=45, ha="right", fontsize=10)
-    ax1f.set_yticklabels(metric_order, fontsize=10)
+    ax1e.set_xticks(np.arange(len(metric_order)))
+    ax1e.set_yticks(np.arange(len(metric_order)))
+    ax1e.set_xticklabels(metric_order, rotation=45, ha="right", fontsize=10)
+    ax1e.set_yticklabels(metric_order, fontsize=10)
 
-    cbar_f = plt.colorbar(im, ax=ax1f, fraction=0.046, pad=0.04)
+    cbar_f = plt.colorbar(im, ax=ax1e, fraction=0.046, pad=0.04)
     cbar_f.set_label("Absolute Correlation", fontweight="bold", fontsize=10)
-    ax1f.set_title(
-        "F. Metric Selection Rationale for Final Ranking\n(Blue box: Selected metrics show complementary information with lower inter-correlation)",
+    ax1e.set_title(
+        "E. Metric Selection Rationale for Final Ranking\n(Blue box: Selected metrics show complementary information with lower inter-correlation)",
         fontweight="bold",
         fontsize=13,
         pad=20,
