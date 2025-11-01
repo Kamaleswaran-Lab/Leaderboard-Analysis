@@ -1,0 +1,37 @@
+﻿Rank,Team name,Affiliation,Weighted Score,Scaled Weighted Score,AUPRC,Net Benefit,ECE,F1,TP,FP,FN,TN,AUC,Status,Submission time
+1,TeamAIMS 🇨🇲,AIMS Cameroon,1.47,0.74,0.37,0.04,0.04,0.21,44,332,5,770,0.87,Complete,7/10/25 09:38
+2,Epiphany 🇺🇸,Coalesce Health,1.37,0.7,0.49,0.03,0.02,0.15,44,477,5,625,0.85,Complete,7/10/25 12:25
+3,UCLPaediatrics 🇬🇧,UCL,1.25,0.64,0.31,0.03,0.01,0.2,44,351,5,751,0.86,Complete,7/11/25 14:37
+4,Epiphany 🇺🇸,Coalesce Health,1.23,0.63,0.47,0.03,0.02,0.15,42,471,7,631,0.83,Complete,7/11/25 13:41
+5,Epiphany 🇺🇸,Coalesce Health,1.15,0.58,0.45,0.04,0.03,0.15,43,491,6,611,0.87,Complete,7/2/25 10:15
+6,TeamAIMS 🇨🇲,AIMS Cameroon,1.06,0.54,0.35,0.04,0.04,0.18,44,402,5,700,0.88,Complete,7/9/25 11:32
+7,TeamAIMS 🇨🇲,AIMS Cameroon,1.01,0.51,0.34,0.04,0.03,0.18,43,396,6,706,0.87,Complete,7/8/25 11:47
+8,BadgerDataScience 🇺🇸,University of Wisconsin-Madison,0.96,0.49,0.25,0.03,0.02,0.19,45,377,4,725,0.87,Complete,7/11/25 14:34
+9,HELP 🇰🇷,Electronics and Telecommunications Research Institute,0.82,0.42,0.24,0.02,0.01,0.18,40,358,9,744,0.84,Complete,7/9/25 09:57
+10,UCLPaediatrics 🇬🇧,UCL,0.69,0.35,0.31,0.04,0.01,0.14,48,569,1,533,0.86,Complete,7/10/25 17:50
+11,BadgerDataScience 🇺🇸,UW-Madison,0.62,0.32,0.3,0.02,0,0.14,40,469,9,633,0.81,Complete,7/10/25 13:03
+12,OHSU 🇺🇸,Oregon Health and Sciences University,0.58,0.3,0.23,0.02,0.01,0.16,44,441,5,661,0.85,Complete,7/10/25 18:59
+13,HELP 🇰🇷,Electronics and Telecommunications Research Institute,0.47,0.24,0.24,0.03,0.01,0.15,45,525,4,577,0.84,Complete,7/7/25 11:47
+14,UCLPaediatrics 🇬🇧,UCL,0.44,0.22,0.31,0.04,0.01,0.12,48,696,1,406,0.86,Complete,7/3/25 10:56
+14,GeniusMinds 🇵🇰,Institute of Business Administration,0.44,0.22,0.24,0.03,0.01,0.14,48,581,1,521,0.85,Complete,7/18/25 17:25
+15,InfectionDeflection 🇨🇭,ETH Zurich / University of Zurich,0.41,0.21,0.23,0.03,0.01,0.15,42,487,7,615,0.78,Complete,7/2/25 07:46
+16,NOVACHOP 🇺🇸,Villanova University,0.37,0.19,0.32,0.03,0.03,0.12,45,646,4,456,0.84,Complete,7/18/25 06:48
+17,NOVACHOP 🇺🇸,Villanova University and Children's Hospital of Philadelphia (CHOP),0.35,0.18,0.37,0.03,0.04,0.11,46,742,3,360,0.84,Complete,7/11/25 06:10
+18,HELP 🇰🇷,Electronics and Telecommunications Research Institute,0.26,0.13,0.24,0.03,0.01,0.13,43,582,6,520,0.81,Complete,7/6/25 10:39
+19,BadgerDataScience 🇺🇸,UW-Madison,0.21,0.11,0.26,0.04,0.02,0.11,45,689,4,413,0.8,Complete,6/11/25 13:34
+20,DATAScienceTeamAtNationwide 🇺🇸,Nationwide children's hospital,0.18,0.09,0.25,0.04,0.01,0.12,48,735,1,367,0.85,Complete,6/30/25 10:47
+20,DataAlchemistsIITM 🇮🇳,"Indian Institute of Technology, Madras",0.18,0.09,0.18,0.04,0.04,0.15,45,525,4,577,0.8,Complete,7/11/25 07:16
+21,GeniusMinds 🇵🇰,Institute of Business Administration,0.05,0.03,0.17,0.03,0.01,0.13,46,633,3,469,0.8,Complete,7/4/25 02:36
+21,GeniusMinds 🇵🇰,Institute of Business Administration,0.06,0.03,0.2,0.03,0.02,0.12,48,688,1,414,0.83,Complete,7/18/25 14:22
+22,UBCDigitalHealthInnovationLab 🇨🇦,University of British Columbia,-0.07,-0.03,0.17,0.01,0.01,0.12,47,675,2,427,0.79,Complete,7/9/25 08:44
+23,DATAScienceTeamAtNationwide 🇺🇸,Nationwide children's hospital,-0.1,-0.05,0.23,0.04,0.01,0.1,49,931,0,171,0.85,Complete,7/11/25 10:48
+24,InfectionDeflection 🇨🇭,ETH Zurich / University of Zurich,-0.17,-0.09,0.21,0.04,0.02,0.1,47,830,2,272,0.79,Complete,7/11/25 07:40
+25,InfectionDeflection 🇨🇭,ETH Zurich / University of Zurich,-0.42,-0.21,0.17,0.04,0.01,0.08,49,1102,0,0,0.75,Complete,7/1/25 05:24
+26,DataAlchemistsIITM 🇮🇳,"Indian Institute of Technology, Madras",-0.43,-0.22,0.12,0.04,0.03,0.1,48,834,1,268,0.79,Complete,6/25/25 05:16
+27,NOVACHOP 🇺🇸,Villanova University and Children's Hospital of Philadelphia (CHOP),-0.56,-0.28,0.27,0.02,0.11,0.08,49,1076,0,26,0.86,Complete,6/26/25 15:09
+28,UBCDigitalHealthInnovationLab 🇨🇦,University of British Columbia,-0.77,-0.39,0.09,-0,0,0.08,49,1102,0,0,0.75,Complete,6/12/25 15:30
+29,The Data Lifesavers 🇨🇦,University of British Columbia,-0.89,-0.45,0.06,0.03,0.02,0.08,49,1102,0,0,0.62,Complete,7/15/25 02:12
+30,TeamSimba 🇰🇪,KEMRI-Wellcome Trust,-1,-0.51,0.23,0.02,0.01,0.11,47,758,2,344,0.8,Complete,7/17/25 16:47
+31,Mountain Digital Medicine 🇺🇸,University of Colorado Anschutz Medical Campus,-1.7,-0.87,0.16,-0.18,0.34,0.14,44,540,5,562,0.82,Complete,7/14/25 16:26
+32,TeamSimba 🇰🇪,KEMRI-Wellcome Trust,-1.92,-0.97,0.29,-0.2,0.33,0.13,43,548,6,554,0.8,Complete,7/9/25 10:32
+33,PakSepsisSquad 🇵🇰,Nishtar Medical University & Hospital Multan,-3.14,-1.59,0.21,-0.54,0.42,0.08,49,1097,0,5,0.64,Complete,7/13/25 00:22
