@@ -24,8 +24,8 @@ FIGURES_DIR.mkdir(exist_ok=True, parents=True)
 plt.style.use("seaborn-v0_8-paper")
 
 
-def pastelize(color, blend: float = 0.4) -> str:
-    """Blend a color with white to produce a pastel variant."""
+def pastelize(color: str, blend: float = 0.45) -> str:
+    """Blend a base color toward white for a pastel-friendly palette."""
     rgb = np.array(to_rgb(color))
     pastel_rgb = rgb + (1 - rgb) * blend
     return to_hex(pastel_rgb)
@@ -159,7 +159,11 @@ def generate_figure1() -> Path:
     ax1b = fig1.add_subplot(gs1[0, 1:])
     sens_thresholds = [0.70, 0.75, 0.80, 0.85, 0.90]
     methods_data = {"Sensitivity": prelim_sens, "Youden": prelim_youden, "F1 Opt": prelim_f1}
-    method_colors = {"Sensitivity": pastelize("#0072B2", 0.4), "Youden": pastelize("#D55E00", 0.4), "F1 Opt": pastelize("#009E73", 0.4)}
+    method_colors = {
+        "Sensitivity": pastelize("#0072B2", 0.4),
+        "Youden": pastelize("#D55E00", 0.4),
+        "F1 Opt": pastelize("#009E73", 0.4),
+    }
 
     method_offsets = {"Sensitivity": -0.08, "Youden": 0.0, "F1 Opt": 0.08}
     fractions_by_method = {}
@@ -210,7 +214,13 @@ def generate_figure1() -> Path:
         x_positions_offset = x_positions + method_offsets.get(method, 0.0)
         line, = ax1b.plot(x_positions_offset, fractions, marker="o", linewidth=2.2, color=color, label=f"{method}: fraction ≥ threshold")
         fraction_lines.append(line)
-        ax1b.fill_between(x_positions_offset, fractions, color=pastelize("#4D4D4D", 0.75), alpha=0.35, zorder=1)
+        ax1b.fill_between(
+            x_positions_offset,
+            fractions,
+            color=color,
+            alpha=0.25,
+            zorder=1,
+        )
         ax1b.scatter(x_positions_offset[chosen_idx], fractions[chosen_idx], color=color, s=80, edgecolor="black", zorder=5)
 
     ax1b.set_ylabel("Fraction of models", fontweight="bold")
@@ -368,10 +378,10 @@ def generate_figure1() -> Path:
     positions = list(range(len(metrics_display)))
     parts = ax1d.violinplot(metrics_data, positions=positions, showmeans=True, showmedians=True, widths=0.7)
 
-    base_metric_colors = sns.color_palette("colorblind", len(metrics_display))
-    pastel_metric_colors = [pastelize(color, 0.5) for color in base_metric_colors]
+    colors_gradient = sns.color_palette("colorblind", len(metrics_display))
+    pastel_metrics = [pastelize(color, 0.5) for color in colors_gradient]
     for i, pc in enumerate(parts["bodies"]):
-        pc.set_facecolor(pastel_metric_colors[i])
+        pc.set_facecolor(pastel_metrics[i])
         pc.set_alpha(0.8)
         pc.set_edgecolor("black")
         pc.set_linewidth(1.5)
@@ -403,7 +413,8 @@ def generate_figure1() -> Path:
 
     from matplotlib.patches import Rectangle
 
-    im = ax1e.imshow(corr_reordered.abs(), cmap="RdYlGn_r", aspect="auto", vmin=0, vmax=1)
+    heatmap_palette = sns.diverging_palette(220, 20, as_cmap=True)
+    im = ax1e.imshow(corr_reordered.abs(), cmap=heatmap_palette, aspect="auto", vmin=0, vmax=1)
     for i in range(len(metric_order)):
         for j in range(len(metric_order)):
             ax1e.text(
