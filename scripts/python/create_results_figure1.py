@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Generate Figure 1: Study design overview and decision analytics."""
 
+import re
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import geopandas as gpd
+import pycountry
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import FuncFormatter
 from matplotlib.lines import Line2D
-from matplotlib.colors import to_rgb, to_hex
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize, to_rgb, to_hex
 from pathlib import Path
 
+from plot_palette import BASE_PALETTE, get_metric_color, lighten_color
 
 ROOT = Path(__file__).resolve().parents[2]
 PRELIM_DIR = ROOT / "optimal_threshold_results"
@@ -22,17 +27,14 @@ FIGURES_DIR.mkdir(exist_ok=True, parents=True)
 
 
 plt.style.use("seaborn-v0_8-paper")
+sns.set_palette(BASE_PALETTE)
 
 
 def pastelize(color: str, blend: float = 0.45) -> str:
-    """Blend a base color toward white for a pastel-friendly palette."""
+    """Blend a base color toward white to recreate the prior pastel tones."""
     rgb = np.array(to_rgb(color))
     pastel_rgb = rgb + (1 - rgb) * blend
     return to_hex(pastel_rgb)
-
-
-BASE_PALETTE = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#F0E442", "#56B4E9"]
-sns.set_palette([pastelize(color, 0.45) for color in BASE_PALETTE])
 plt.rcParams["figure.dpi"] = 300
 plt.rcParams["savefig.dpi"] = 300
 plt.rcParams["font.size"] = 10
@@ -41,6 +43,19 @@ plt.rcParams["axes.titlesize"] = 12
 plt.rcParams["xtick.labelsize"] = 9
 plt.rcParams["ytick.labelsize"] = 9
 plt.rcParams["legend.fontsize"] = 9
+
+
+def compute_mcc(tp: pd.Series, fp: pd.Series, fn: pd.Series, tn: pd.Series) -> pd.Series:
+    """Return Matthews Correlation Coefficient given confusion matrix components."""
+    tp_f = tp.astype(float)
+    fp_f = fp.astype(float)
+    fn_f = fn.astype(float)
+    tn_f = tn.astype(float)
+    numerator = tp_f * tn_f - fp_f * fn_f
+    denom = np.sqrt((tp_f + fp_f) * (tp_f + fn_f) * (tn_f + fp_f) * (tn_f + fn_f))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mcc = np.where(denom > 0, numerator / denom, np.nan)
+    return pd.Series(mcc, index=tp.index)
 
 
 def extract_team_name(full_name: str) -> str:
@@ -57,6 +72,14 @@ def extract_team_name(full_name: str) -> str:
     if team_name == "TeamAIMS2":
         team_name = "TeamAIMS"
     return team_name
+
+
+def normalize_team_key(name: str) -> str:
+    """Return a lowercase alphanumeric key for consistent team matching."""
+    if not isinstance(name, str):
+        return ""
+    ascii_name = name.encode("ascii", errors="ignore").decode("ascii").strip()
+    return "".join(ch.lower() for ch in ascii_name if ch.isalnum())
 
 
 def remove_outliers_nb(data: np.ndarray) -> np.ndarray:
@@ -102,9 +125,27 @@ def generate_figure1() -> Path:
     prelim_sens["Team_clean"] = prelim_sens["Team"].apply(extract_team_name)
     prelim_f1["Team_clean"] = prelim_f1["Team"].apply(extract_team_name)
     prelim_youden["Team_clean"] = prelim_youden["Team"].apply(extract_team_name)
+    final_scores["Team_clean"] = final_scores["Team_clean"].str.strip()
+    final_scores["Team_key"] = final_scores["Team_clean"].apply(normalize_team_key)
 
-    fig1 = plt.figure(figsize=(17, 15))
-    gs1 = GridSpec(3, 4, figure=fig1, hspace=0.42, wspace=0.36, width_ratios=[1.9, 0.9, 0.9, 0.9])
+    if {"TP", "FP", "FN", "TN"}.issubset(prelim_sens.columns):
+        prelim_sens["MCC"] = compute_mcc(
+            prelim_sens["TP"],
+            prelim_sens["FP"],
+            prelim_sens["FN"],
+            prelim_sens["TN"],
+        )
+
+    fig1 = plt.figure(figsize=(17, 19))
+    gs1 = GridSpec(
+        4,
+        4,
+        figure=fig1,
+        hspace=0.42,
+        wspace=0.36,
+        width_ratios=[1.9, 0.9, 0.9, 0.9],
+        height_ratios=[1.0, 1.1, 1.15, 1.2],
+    )
     fig1.subplots_adjust(right=0.85)
 
     # Panel A
@@ -130,12 +171,23 @@ def generate_figure1() -> Path:
     categories = ["Preliminary", "Dummy/Validation", "Final"]
     total_values = [n_prelim, n_valid, n_final_subs]
     unique_values = [n_prelim_teams, n_valid_teams, n_final_teams]
-    colors_bar = [pastelize("#0072B2", 0.5), pastelize("#009E73", 0.5), pastelize("#D55E00", 0.5)]
+    colors_bar = [pastelize(BASE_PALETTE[i % len(BASE_PALETTE)], 0.5) for i in range(len(categories))]
     bars = ax1a.bar(categories, total_values, color=colors_bar, alpha=0.7, edgecolor="black", linewidth=1.5)
 
-    for bar, total, unique in zip(bars, total_values, unique_values):
+    for idx, (bar, total, unique) in enumerate(zip(bars, total_values, unique_values)):
+        if idx == 0:
+            bar.set_width(bar.get_width() * 1.2)
+            bar.set_x(bar.get_x() - bar.get_width() * 0.1)
         height = bar.get_height()
-        ax1a.text(bar.get_x() + bar.get_width() / 2.0, height, f"{int(total)}", ha="center", va="bottom", fontweight="bold", fontsize=12)
+        ax1a.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            height,
+            f"{int(total)}",
+            ha="center",
+            va="bottom",
+            fontweight="bold",
+            fontsize=12,
+        )
         ax1a.text(
             bar.get_x() + bar.get_width() / 2.0,
             height / 2.0,
@@ -151,18 +203,18 @@ def generate_figure1() -> Path:
     ax1a.set_ylabel("Number of Submissions", fontweight="bold")
     ax1a.set_title("A. Multi-Phase Participation", fontweight="bold", fontsize=13)
     ax1a.set_ylim(0, max(total_values) * 1.15)
+    ax1a.grid(True, alpha=0.3, axis="y")
     ax1a.spines["top"].set_visible(False)
     ax1a.spines["right"].set_visible(False)
-    ax1a.grid(True, alpha=0.3, axis="y")
 
     # Panel B
     ax1b = fig1.add_subplot(gs1[0, 1:])
     sens_thresholds = [0.70, 0.75, 0.80, 0.85, 0.90]
     methods_data = {"Sensitivity": prelim_sens, "Youden": prelim_youden, "F1 Opt": prelim_f1}
+    method_color_alias = {"Sensitivity": "Sensitivity", "Youden": "Youden", "F1 Opt": "F1"}
     method_colors = {
-        "Sensitivity": pastelize("#0072B2", 0.4),
-        "Youden": pastelize("#D55E00", 0.4),
-        "F1 Opt": pastelize("#009E73", 0.4),
+        method: pastelize(get_metric_color(alias), 0.35)
+        for method, alias in method_color_alias.items()
     }
 
     method_offsets = {"Sensitivity": -0.08, "Youden": 0.0, "F1 Opt": 0.08}
@@ -224,7 +276,7 @@ def generate_figure1() -> Path:
         ax1b.scatter(x_positions_offset[chosen_idx], fractions[chosen_idx], color=color, s=80, edgecolor="black", zorder=5)
 
     ax1b.set_ylabel("Fraction of models", fontweight="bold")
-    ax1b.set_ylim(0, 1.05)
+    ax1b.set_ylim(0, 1.12)
     ax1b.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:.1f}"))
 
     ax1b_secondary = ax1b.twinx()
@@ -243,7 +295,7 @@ def generate_figure1() -> Path:
         )
         nb_lines.append(line_nb)
 
-    ax1b_secondary.set_ylim(-20, 5)
+    ax1b_secondary.set_ylim(-25, 7)
     ax1b_secondary.set_yticks([-20, -15, -10, -5, 0, 5])
 
     ax1b_secondary.set_ylabel("Median Net Benefit (percent)", fontweight="bold")
@@ -323,8 +375,9 @@ def generate_figure1() -> Path:
     methods_nb_percent = {k: v * 100.0 for k, v in methods_nb_clean.items()}
     positions = [0, 1, 2]
     parts = ax1c.violinplot(list(methods_nb_percent.values()), positions=positions, showmeans=True, showmedians=True)
+    violin_colors = [lighten_color(get_metric_color(method_color_alias.get(name, name)), 0.25) for name in methods_nb_clean.keys()]
     for i, pc in enumerate(parts["bodies"]):
-        pc.set_facecolor(colors_bar[i])
+        pc.set_facecolor(violin_colors[i])
         pc.set_alpha(0.7)
         pc.set_edgecolor("black")
         pc.set_linewidth(1.2)
@@ -378,8 +431,7 @@ def generate_figure1() -> Path:
     positions = list(range(len(metrics_display)))
     parts = ax1d.violinplot(metrics_data, positions=positions, showmeans=True, showmedians=True, widths=0.7)
 
-    colors_gradient = sns.color_palette("colorblind", len(metrics_display))
-    pastel_metrics = [pastelize(color, 0.5) for color in colors_gradient]
+    pastel_metrics = [lighten_color(get_metric_color(metric), 0.25) for metric in metrics_display]
     for i, pc in enumerate(parts["bodies"]):
         pc.set_facecolor(pastel_metrics[i])
         pc.set_alpha(0.8)
@@ -404,48 +456,225 @@ def generate_figure1() -> Path:
 
     # Panel E
     ax1e = fig1.add_subplot(gs1[2, 0:4])
-    metrics_for_corr = ["AUC", "AUPRC", "F1", "Sensitivity", "Specificity", "Precision", "Net Benefit", "ECE"]
+    metrics_for_corr = ["AUC", "AUPRC", "F1", "Sensitivity", "Specificity", "Precision", "Net Benefit", "ECE", "MCC"]
     corr_data = prelim_sens[metrics_for_corr].corr()
-    selected_metrics = ["Net Benefit", "F1", "AUPRC", "ECE", "Sensitivity"]
-    other_metrics = ["AUC", "Specificity", "Precision"]
+    selected_metrics = ["Sensitivity", "AUPRC", "Net Benefit", "F1", "ECE"]
+    other_metrics = ["AUC", "Specificity", "Precision", "MCC"]
     metric_order = selected_metrics + other_metrics
     corr_reordered = corr_data.loc[metric_order, metric_order]
 
     from matplotlib.patches import Rectangle
 
     heatmap_palette = sns.diverging_palette(220, 20, as_cmap=True)
-    im = ax1e.imshow(corr_reordered.abs(), cmap=heatmap_palette, aspect="auto", vmin=0, vmax=1)
-    for i in range(len(metric_order)):
-        for j in range(len(metric_order)):
+    mask = np.zeros_like(corr_reordered, dtype=bool)
+    heatmap = sns.heatmap(
+        corr_reordered,
+        mask=mask,
+        cmap=heatmap_palette,
+        vmin=-1,
+        vmax=1,
+        ax=ax1e,
+        cbar=False,
+        linewidths=0.5,
+        linecolor="white",
+    )
+
+    for i in range(corr_reordered.shape[0]):
+        for j in range(corr_reordered.shape[1]):
+            value = corr_reordered.iloc[i, j]
             ax1e.text(
-                j,
-                i,
-                f"{corr_reordered.iloc[i, j]:.2f}",
+                j + 0.5,
+                i + 0.5,
+                f"{value:.2f}",
                 ha="center",
                 va="center",
-                color="black",
-                fontsize=9,
-                fontweight="bold" if abs(corr_reordered.iloc[i, j]) < 0.7 else "normal",
+                fontsize=10,
+                fontweight="bold" if abs(value) >= 0.6 else "normal",
+                color="black" if abs(value) < 0.6 else "white",
             )
 
-    for i in range(len(selected_metrics)):
-        for j in range(len(selected_metrics)):
-            rect = Rectangle((j - 0.5, i - 0.5), 1, 1, fill=False, edgecolor="blue", linewidth=3)
-            ax1e.add_patch(rect)
+    rect = Rectangle(
+        (0, 0),
+        len(selected_metrics),
+        len(selected_metrics),
+        fill=False,
+        edgecolor="#222222",
+        linewidth=2.5,
+        linestyle="--",
+    )
+    ax1e.add_patch(rect)
 
-    ax1e.set_xticks(np.arange(len(metric_order)))
-    ax1e.set_yticks(np.arange(len(metric_order)))
-    ax1e.set_xticklabels(metric_order, rotation=45, ha="right", fontsize=10)
-    ax1e.set_yticklabels(metric_order, fontsize=10)
+    ax1e.set_xticks(np.arange(len(metric_order)) + 0.5)
+    ax1e.set_yticks(np.arange(len(metric_order)) + 0.5)
+    ax1e.set_xticklabels(metric_order, rotation=45, ha="right", fontsize=11)
+    ax1e.set_yticklabels(metric_order, fontsize=11)
+    ax1e.tick_params(length=0, labelsize=10)
 
-    cbar_f = plt.colorbar(im, ax=ax1e, fraction=0.046, pad=0.04)
-    cbar_f.set_label("Absolute Correlation", fontweight="bold", fontsize=10)
+    cbar_f = fig1.colorbar(heatmap.collections[0], ax=ax1e, fraction=0.046, pad=0.04)
+    cbar_f.set_label("Correlation", fontweight="bold", fontsize=12)
+    cbar_f.ax.tick_params(labelsize=10)
+
     ax1e.set_title(
-        "E. Metric Selection Rationale for Final Ranking\n(Blue box: Selected metrics show complementary information with lower inter-correlation)",
+        "E. Metric Selection Rationale for Final Ranking\n(Outlined cells: Selected metrics display complementary correlations)",
         fontweight="bold",
         fontsize=13,
         pad=20,
     )
+
+    # Panel F — Global distribution of finalist teams
+    ax1f = fig1.add_subplot(gs1[3, 0:4])
+    try:
+        leaderboard_info = pd.read_json(PROCESSED_DIR / "leaderboard_with_info.json")
+    except FileNotFoundError:
+        ax1f.axis("off")
+        ax1f.text(
+            0.5,
+            0.5,
+            "Team location metadata unavailable",
+            ha="center",
+            va="center",
+            fontsize=11,
+            fontweight="bold",
+        )
+    else:
+        leaderboard_info["team_key"] = leaderboard_info["team"].apply(normalize_team_key)
+        final_team_keys = final_scores["Team_key"].dropna().unique()
+        team_info = leaderboard_info[leaderboard_info["team_key"].isin(final_team_keys)].copy()
+        team_info = team_info.sort_values("team_key").drop_duplicates("team_key", keep="first")
+
+        country_aliases = {
+            "USA": "United States",
+            "US": "United States",
+            "U.S.A": "United States",
+            "U.S.": "United States",
+            "UK": "United Kingdom",
+            "U.K.": "United Kingdom",
+            "South Korea": "Korea, Republic of",
+            "Republic of Korea": "Korea, Republic of",
+            "Korea": "Korea, Republic of",
+            "Cameroon": "Cameroon",
+            "nan": None,
+        }
+        split_pattern = re.compile(r",|/|&|\band\b", flags=re.IGNORECASE)
+
+        def countries_to_iso(country_field: object) -> list[str]:
+            if not isinstance(country_field, str):
+                return []
+            tokens = [token.strip() for token in split_pattern.split(country_field) if token.strip()]
+            iso_codes: list[str] = []
+            for token in tokens:
+                alias = country_aliases.get(token, token)
+                if alias is None:
+                    continue
+                try:
+                    match = pycountry.countries.lookup(alias)
+                except LookupError:
+                    try:
+                        match = pycountry.countries.lookup(alias.title())
+                    except LookupError:
+                        continue
+                code = match.alpha_3
+                if code not in iso_codes:
+                    iso_codes.append(code)
+            return iso_codes
+
+        country_team_map: dict[str, list[str]] = {}
+        for _, row in team_info.iterrows():
+            display_name = str(row.get("Team_clean", "")).strip()
+            if not display_name:
+                continue
+            for iso_code in countries_to_iso(row.get("Country")):
+                teams = country_team_map.setdefault(iso_code, [])
+                if display_name not in teams:
+                    teams.append(display_name)
+
+        country_counts = {iso: len(names) for iso, names in country_team_map.items()}
+
+        if not country_counts:
+            ax1f.axis("off")
+            ax1f.text(
+                0.5,
+                0.5,
+                "Team location metadata unavailable",
+                ha="center",
+                va="center",
+                fontsize=11,
+                fontweight="bold",
+            )
+        else:
+            world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
+            world = world[world["name"] != "Antarctica"].copy()
+            world["team_count"] = world["iso_a3"].map(country_counts).fillna(0)
+
+            base_color = "#f0f0f0"
+            edge_color = "#d4d4d4"
+            highlight_cmap = plt.get_cmap("viridis")
+
+            world.plot(ax=ax1f, color=base_color, edgecolor=edge_color, linewidth=0.4)
+            highlighted = world[world["team_count"] > 0]
+
+            if highlighted.empty:
+                ax1f.axis("off")
+                ax1f.text(
+                    0.5,
+                    0.5,
+                    "Team location metadata unavailable",
+                    ha="center",
+                    va="center",
+                    fontsize=11,
+                    fontweight="bold",
+                )
+            else:
+                highlighted.plot(
+                    ax=ax1f,
+                    column="team_count",
+                    cmap=highlight_cmap,
+                    linewidth=0.6,
+                    edgecolor="#555555",
+                    legend=False,
+                )
+
+                max_count = highlighted["team_count"].max()
+                for _, row in highlighted.iterrows():
+                    iso = row.get("iso_a3")
+                    names = country_team_map.get(iso, [])
+                    if not names:
+                        continue
+                    label_text = "\n".join(names)
+                    point = row.geometry.representative_point()
+                    text_color = "#1b1b1b"
+                    bbox_kwargs = {
+                        "facecolor": "white",
+                        "alpha": 0.75,
+                        "edgecolor": "#333333",
+                        "linewidth": 0.4,
+                        "boxstyle": "round,pad=0.28",
+                    }
+                    ax1f.text(
+                        point.x,
+                        point.y,
+                        label_text,
+                        ha="center",
+                        va="center",
+                        fontsize=9,
+                        fontweight="bold",
+                        color=text_color,
+                        bbox=bbox_kwargs,
+                    )
+
+                ax1f.set_xlim(-180, 180)
+                ax1f.set_ylim(-60, 90)
+                ax1f.set_axis_off()
+
+                norm = Normalize(vmin=1, vmax=max_count)
+                scalar_map = ScalarMappable(norm=norm, cmap=highlight_cmap)
+                scalar_map.set_array([])
+                cbar = fig1.colorbar(scalar_map, ax=ax1f, orientation="horizontal", fraction=0.05, pad=0.08)
+                cbar.set_label("Number of Finalist Teams", fontweight="bold", fontsize=12)
+                cbar.set_ticks(np.arange(1, max_count + 1))
+                cbar.ax.tick_params(labelsize=10)
+
+    ax1f.set_title("F. Global Distribution of Finalist Teams", fontweight="bold", fontsize=13, pad=12)
 
     output_path = FIGURES_DIR / "results_figure1_overview.png"
     plt.savefig(output_path, bbox_inches="tight", dpi=300)

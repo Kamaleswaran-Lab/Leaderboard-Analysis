@@ -5,9 +5,17 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from matplotlib.gridspec import GridSpec
+from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+from matplotlib.patches import Patch
 from pathlib import Path
 import re
+
+from plot_palette import (
+    BASE_PALETTE,
+    darken_color,
+    get_metric_color,
+    lighten_color,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,7 +27,7 @@ FIGURES_DIR.mkdir(exist_ok=True, parents=True)
 
 
 plt.style.use("seaborn-v0_8-paper")
-sns.set_palette("husl")
+sns.set_palette(BASE_PALETTE)
 plt.rcParams["figure.dpi"] = 300
 plt.rcParams["savefig.dpi"] = 300
 plt.rcParams["font.size"] = 10
@@ -28,6 +36,19 @@ plt.rcParams["axes.titlesize"] = 12
 plt.rcParams["xtick.labelsize"] = 9
 plt.rcParams["ytick.labelsize"] = 9
 plt.rcParams["legend.fontsize"] = 9
+
+
+def compute_mcc(tp: pd.Series, fp: pd.Series, fn: pd.Series, tn: pd.Series) -> pd.Series:
+    """Return Matthews Correlation Coefficient for confusion matrix inputs."""
+    tp_f = tp.astype(float)
+    fp_f = fp.astype(float)
+    fn_f = fn.astype(float)
+    tn_f = tn.astype(float)
+    numerator = tp_f * tn_f - fp_f * fn_f
+    denom = np.sqrt((tp_f + fp_f) * (tp_f + fn_f) * (tn_f + fp_f) * (tn_f + fn_f))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mcc = np.where(denom > 0, numerator / denom, np.nan)
+    return pd.Series(mcc, index=tp.index)
 
 
 def remove_outliers(series: pd.Series, iqr_factor: float = 1.5) -> pd.Series:
@@ -202,25 +223,25 @@ def generate_figure2() -> Path:
     factor_weights = pd.read_csv(PROCESSED_DIR / "factor_weights.csv")
     weight_map = {row["feature"]: row["weight"] for _, row in factor_weights.iterrows()}
 
-    fig2 = plt.figure(figsize=(18, 13))
-    gs2 = GridSpec(3, 4, figure=fig2, hspace=0.35, wspace=0.55, width_ratios=[0.9, 1.2, 1.2, 1.1])
-    fig2.subplots_adjust(hspace=1.2, bottom=0.06, top=0.95, right=0.9, left=0.07, wspace=0.6)
+    fig2 = plt.figure(figsize=(18, 10))
+    gs2 = GridSpec(2, 4, figure=fig2, hspace=0.35, wspace=0.55, width_ratios=[0.9, 1.2, 1.2, 1.1])
+    fig2.subplots_adjust(hspace=0.9, bottom=0.08, top=0.94, right=0.9, left=0.07, wspace=0.6)
 
     # Panel A
     ax2a = fig2.add_subplot(gs2[0, :2])
     core_metrics = ["F1", "AUPRC", "Net.Benefit", "ECE"]
     panel_a_weights = factor_weights[factor_weights["feature"].isin(core_metrics)].copy()
-    colors_weight = ["#2ECC71" if w > 0 else "#E74C3C" for w in panel_a_weights["weight"]]
+    colors_weight = [lighten_color(get_metric_color(feature), 0.25) for feature in panel_a_weights["feature"]]
     bars = ax2a.barh(
         panel_a_weights["feature"],
         panel_a_weights["weight"],
         color=colors_weight,
         alpha=0.7,
-        edgecolor="black",
+        edgecolor=[get_metric_color(feature) for feature in panel_a_weights["feature"]],
         linewidth=1.5,
     )
     ax2a.axvline(x=0, color="black", linestyle="-", linewidth=1)
-    ax2a.set_xlabel("Weight Value", fontweight="bold")
+    ax2a.set_xlabel("Weight Value", fontweight="bold", fontsize=12)
     ax2a.set_title("A. Multi-Criteria Factor Weights for Composite Scoring", fontweight="bold", fontsize=14)
     ax2a.grid(True, alpha=0.3, axis="x")
     ax2a.spines["top"].set_visible(False)
@@ -236,7 +257,7 @@ def generate_figure2() -> Path:
                 f"{weight:.3f}",
                 va="center",
                 ha="left" if weight >= 0 else "right",
-                fontsize=10,
+                fontsize=11,
                 fontweight="bold",
                 color="black",
             )
@@ -249,7 +270,7 @@ def generate_figure2() -> Path:
                 f"{weight:.3f}",
                 va="center",
                 ha="center",
-                fontsize=10,
+                fontsize=11,
                 fontweight="bold",
                 color="white",
             )
@@ -281,7 +302,7 @@ def generate_figure2() -> Path:
     )
 
     contribution = panel_b_weights["share"].values * 100
-    colors_pie = ["#3498DB", "#E74C3C", "#2ECC71", "#F39C12", "#9B59B6", "#1ABC9C"]
+    colors_pie = [lighten_color(get_metric_color(feature), 0.25) for feature in panel_b_weights["feature"]]
     
     # Show percentages inside for all except small slices
     def autopct_func(_pct: float) -> str:
@@ -294,7 +315,7 @@ def generate_figure2() -> Path:
         autopct=autopct_func,
         startangle=90,
         colors=colors_pie[: len(contribution)],
-        textprops={"fontsize": 9, "fontweight": "bold"},
+        textprops={"fontsize": 10, "fontweight": "bold"},
     )
     
     # Add labels outside the pie
@@ -318,62 +339,220 @@ def generate_figure2() -> Path:
             f"{display_label}\n{pct:.1f}%",
             ha=horizontalalignment,
             va="center",
-            fontsize=9,
+            fontsize=10,
             fontweight="bold",
         )
     
     ax2b.set_title("B. Relative Weight Contribution", fontweight="bold", fontsize=13, pad=20)
 
     # Panel C - All metrics distributions from dummy phase (row 2 left)
-    ax2c = fig2.add_subplot(gs2[1, :2])
-    base_metrics = ["F1", "AUPRC", "AUC", "ECE", "Sensitivity", "Specificity"]
-    metric_labels_dummy: list[str] = []
-    metric_data_dummy: list[pd.Series] = []
-    label_map = {
-        "F1": "F1",
-        "AUPRC": "AUPRC",
-        "AUC": "AUC",
-        "ECE": "ECE",
-        "Sensitivity": "Sensitivity",
-        "Specificity": "Specificity",
-    }
+    metric_definitions = [
+        {"display": "F1", "aliases": ["F1"]},
+        {"display": "AUPRC", "aliases": ["AUPRC"]},
+        {"display": "AUC", "aliases": ["AUC"]},
+        {"display": "ECE", "aliases": ["ECE"]},
+        {"display": "Sensitivity", "aliases": ["Sensitivity"]},
+        {"display": "Specificity", "aliases": ["Specificity"]},
+        {"display": "Net Benefit", "aliases": ["Net.Benefit", "Net Benefit"]},
+        {"display": "MCC", "aliases": ["MCC"]},
+    ]
 
-    for metric in base_metrics:
-        if metric in dummy_phase.columns:
-            cleaned = remove_outliers(dummy_phase[metric])
-            if not cleaned.empty:
-                metric_data_dummy.append(cleaned)
-                metric_labels_dummy.append(label_map.get(metric, metric))
+    phase_sources: list[tuple[str, pd.DataFrame]] = [
+        ("Dummy Phase", dummy_phase.copy()),
+        ("Preliminary Phase", prelim_sens.copy()),
+    ]
 
-    if "Net.Benefit" in dummy_phase.columns:
-        nb_clean = remove_outliers(dummy_phase["Net.Benefit"])
-        if not nb_clean.empty:
-            metric_data_dummy.append(nb_clean)
-            metric_labels_dummy.append("Net Benefit")
+    distribution_records: list[dict[str, object]] = []
 
-    if metric_data_dummy:
-        metric_arrays = [series.values for series in metric_data_dummy]
-        parts = ax2c.violinplot(
-            metric_arrays,
-            positions=range(len(metric_labels_dummy)),
-            showmeans=True,
-            showmedians=True,
+    for phase_name, phase_df in phase_sources:
+        numeric_df = phase_df.copy()
+        for candidate in metric_definitions:
+            for alias in candidate["aliases"]:
+                if alias in numeric_df.columns:
+                    numeric_df[alias] = pd.to_numeric(numeric_df[alias], errors="coerce")
+
+        if {"TP", "FP", "FN", "TN"}.issubset(numeric_df.columns):
+            numeric_df["MCC"] = compute_mcc(
+                numeric_df["TP"],
+                numeric_df["FP"],
+                numeric_df["FN"],
+                numeric_df["TN"],
+            )
+
+        for metric_cfg in metric_definitions:
+            series = None
+            for alias in metric_cfg["aliases"]:
+                if alias in numeric_df.columns:
+                    series = numeric_df[alias]
+                    break
+            if series is None:
+                continue
+            cleaned = remove_outliers(series.dropna())
+            if cleaned.empty:
+                continue
+            for value in cleaned:
+                distribution_records.append(
+                    {
+                        "metric": metric_cfg["display"],
+                        "value": float(value),
+                        "Phase": phase_name,
+                    }
+                )
+
+    if distribution_records:
+        dist_df = pd.DataFrame(distribution_records)
+        metric_order = [cfg["display"] for cfg in metric_definitions if cfg["display"] in dist_df["metric"].unique()]
+        metric_candidates = [(metric, dist_df[dist_df["metric"] == metric]) for metric in metric_order]
+        metric_candidates = [(metric, subset) for metric, subset in metric_candidates if not subset.empty]
+
+        n_metrics = len(metric_candidates)
+        n_cols = 3
+        n_rows = int(np.ceil(n_metrics / n_cols))
+        panel_c_spec = GridSpecFromSubplotSpec(
+            n_rows,
+            n_cols,
+            subplot_spec=gs2[1, :2],
+            wspace=0.25,
+            hspace=0.55,
         )
-        palette_c = sns.color_palette("husl", len(metric_labels_dummy))
-        for i, pc in enumerate(parts["bodies"]):
-            pc.set_facecolor(palette_c[i])
-            pc.set_alpha(0.75)
-        ax2c.set_xticks(range(len(metric_labels_dummy)))
-        ax2c.set_xticklabels(metric_labels_dummy, rotation=25, ha="right")
-        ax2c.set_ylabel("Metric Value", fontweight="bold")
-        ax2c.set_title(
-            "C. Distribution of Ranking Metrics\n(Dummy Phase, outliers removed)",
+
+        facet_axes: list[plt.Axes] = []
+        empty_axes: list[plt.Axes] = []
+        phase_order = ["Preliminary Phase", "Dummy Phase"]
+
+        for idx, (metric, subset) in enumerate(metric_candidates):
+            row = idx // n_cols
+            col = idx % n_cols
+            ax = fig2.add_subplot(panel_c_spec[row, col])
+
+            metric_color = get_metric_color(metric)
+            palette_lookup = {
+                "Dummy Phase": darken_color(metric_color, 0.18),
+                "Preliminary Phase": lighten_color(metric_color, 0.25),
+            }
+
+            for phase in phase_order:
+                phase_subset = subset[subset["Phase"] == phase]
+                values = phase_subset["value"].dropna()
+                if len(values.unique()) < 2:
+                    if not values.empty:
+                        ax.axvline(values.iloc[0], color=palette_lookup.get(phase, metric_color), linestyle="--", linewidth=1.0)
+                    continue
+                sns.kdeplot(
+                    data=phase_subset,
+                    x="value",
+                    fill=True,
+                    common_norm=False,
+                    alpha=0.45,
+                    linewidth=1.2,
+                    color=palette_lookup.get(phase, metric_color),
+                    ax=ax,
+                )
+
+            ax.set_title(metric, fontweight="bold", fontsize=11)
+            ax.set_xlabel("")
+            ax.tick_params(axis="x", rotation=0)
+            ax.set_ylabel("")
+            ax.grid(True, alpha=0.2, axis="x")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.tick_params(axis="both", labelsize=10)
+
+            # Adjust y-range to leave room for annotation text if needed later.
+            ymin, ymax = ax.get_ylim()
+            if ymax > 0:
+                ax.set_ylim(ymin, ymax * 1.15)
+
+            legend_obj = ax.get_legend()
+            if legend_obj is not None:
+                legend_obj.remove()
+
+            facet_axes.append(ax)
+
+        total_slots = n_rows * n_cols
+        if total_slots > len(metric_candidates):
+            for idx in range(len(metric_candidates), total_slots):
+                row = idx // n_cols
+                col = idx % n_cols
+                empty_ax = fig2.add_subplot(panel_c_spec[row, col])
+                empty_ax.axis("off")
+                empty_axes.append(empty_ax)
+
+        sample_color = get_metric_color(metric_candidates[0][0]) if metric_candidates else "#666666"
+        legend_handles = [
+            Patch(
+                facecolor=darken_color(sample_color, 0.18),
+                edgecolor="black",
+                linewidth=0.6,
+                alpha=0.55,
+                label="Dummy Phase",
+            ),
+            Patch(
+                facecolor=lighten_color(sample_color, 0.25),
+                edgecolor="black",
+                linewidth=0.6,
+                alpha=0.55,
+                label="Preliminary Phase",
+            ),
+        ]
+
+        legend_ax: plt.Axes
+        if empty_axes:
+            legend_ax = empty_axes[0]
+        else:
+            first_ax = facet_axes[0]
+            bbox = first_ax.get_position()
+            legend_width = 0.08
+            legend_ax = fig2.add_axes([
+                min(bbox.x1 + 0.015, 0.95 - legend_width),
+                bbox.y0 + 0.05,
+                legend_width,
+                bbox.height * 0.6,
+            ])
+            legend_ax.axis("off")
+
+        legend_ax.legend(
+            handles=legend_handles,
+            title="Phase",
+            frameon=False,
+            loc="upper left",
+            fontsize=10,
+            title_fontsize=11,
+        )
+
+        x0 = min(ax.get_position().x0 for ax in facet_axes)
+        x1 = max(ax.get_position().x1 for ax in facet_axes)
+        y0 = min(ax.get_position().y0 for ax in facet_axes)
+        y1 = max(ax.get_position().y1 for ax in facet_axes)
+
+        fig2.text(
+            (x0 + x1) / 2,
+            y0 - 0.055,
+            "Metric Value",
+            ha="center",
+            va="top",
             fontweight="bold",
-            fontsize=13,
+            fontsize=12,
         )
-        ax2c.grid(True, alpha=0.3, axis="y")
-        ax2c.spines["top"].set_visible(False)
-        ax2c.spines["right"].set_visible(False)
+        fig2.text(
+            x0 - 0.035,
+            (y0 + y1) / 2,
+            "Density",
+            ha="center",
+            va="center",
+            rotation=90,
+            fontweight="bold",
+            fontsize=12,
+        )
+
+        panel_anchor = facet_axes[0].get_position()
+        fig2.text(
+            panel_anchor.x0,
+            panel_anchor.y1 + 0.04,
+            "C. Metric Distributions by Phase",
+            fontsize=13,
+            fontweight="bold",
+        )
 
     # Panel D - Correlation heatmap using remaining row 2 space
     ax2d = fig2.add_subplot(gs2[1, 2:])
@@ -385,22 +564,38 @@ def generate_figure2() -> Path:
     else:
         dummy_phase_ranked["Precision"] = np.nan
 
-    selected_metrics = ["AUC", "AUPRC", "F1", "Precision", "Sensitivity"]
-    other_metrics = ["Specificity", "ECE", "Net.Benefit", "TP", "FP", "TN", "FN", "Rank"]
-    metric_order = selected_metrics + other_metrics
-    available_metrics = [m for m in metric_order if m in dummy_phase_ranked.columns]
+    if {"TP", "FP", "FN", "TN"}.issubset(dummy_phase_ranked.columns):
+        dummy_phase_ranked["MCC"] = compute_mcc(
+            dummy_phase_ranked["TP"],
+            dummy_phase_ranked["FP"],
+            dummy_phase_ranked["FN"],
+            dummy_phase_ranked["TN"],
+        )
 
-    if len(available_metrics) > 2:
-        corr_matrix_dummy = dummy_phase_ranked[available_metrics].corr()
+    heatmap_df = dummy_phase_ranked.copy()
+    rename_map = {
+        "Net.Benefit": "Net Benefit",
+        "final_score": "Scaled Weighted Score",
+    }
+    heatmap_df = heatmap_df.rename(columns=rename_map)
+
+    selected_metrics = ["Sensitivity", "AUPRC", "Net Benefit", "F1", "ECE"]
+    other_metrics = ["AUC", "Specificity", "Precision", "MCC", "Scaled Weighted Score"]
+    confusion_metrics = ["TP", "FP", "TN", "FN", "Rank"]
+    heatmap_metrics = selected_metrics + other_metrics + confusion_metrics
+    available_metrics = [m for m in heatmap_metrics if m in heatmap_df.columns]
+
+    if len(available_metrics) >= 3:
+        corr_matrix = heatmap_df[available_metrics].corr()
 
         from matplotlib.patches import Rectangle
 
-        mask = np.triu(np.ones_like(corr_matrix_dummy, dtype=bool), k=1)
-        heatmap_palette = sns.diverging_palette(220, 20, as_cmap=True)
+        mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
+        cmap = sns.diverging_palette(220, 20, as_cmap=True)
         sns.heatmap(
-            corr_matrix_dummy,
+            corr_matrix,
             mask=mask,
-            cmap=heatmap_palette,
+            cmap=cmap,
             vmin=-1,
             vmax=1,
             ax=ax2d,
@@ -409,75 +604,63 @@ def generate_figure2() -> Path:
             linecolor="white",
         )
 
-        confusion_metrics = ["TP", "FP", "TN", "FN"]
-        confusion_indices = [available_metrics.index(m) for m in confusion_metrics if m in available_metrics]
+        confusion_set = {"TP", "FP", "TN", "FN"}
         rank_idx = available_metrics.index("Rank") if "Rank" in available_metrics else None
-        f1_idx = available_metrics.index("F1") if "F1" in available_metrics else None
-        weighted_metrics_norm = {normalize_metric_name(feat) for feat in factor_weights["feature"]}
 
-        # Add text annotations only for visible (lower triangular) cells
         for i in range(len(available_metrics)):
             for j in range(len(available_metrics)):
                 if j > i:
                     continue
-                value = corr_matrix_dummy.iloc[i, j]
-                highlight = False
-                label_i_norm = normalize_metric_name(available_metrics[i])
-                label_j_norm = normalize_metric_name(available_metrics[j])
-                if rank_idx is not None:
-                    if (i == rank_idx and j in confusion_indices) or (j == rank_idx and i in confusion_indices):
-                        highlight = True
-                    if f1_idx is not None and ((i == rank_idx and j == f1_idx) or (j == rank_idx and i == f1_idx)):
-                        highlight = True
-                    if i == rank_idx and label_j_norm in weighted_metrics_norm:
-                        highlight = True
-                    if j == rank_idx and label_i_norm in weighted_metrics_norm:
-                        highlight = True
-                if label_i_norm in weighted_metrics_norm and label_j_norm in weighted_metrics_norm:
-                    highlight = True
+                value = corr_matrix.iloc[i, j]
+                label_i = available_metrics[i]
+                label_j = available_metrics[j]
+                highlight = label_i == "Rank" or label_j == "Rank"
+                text_color = "black" if highlight or abs(value) < 0.6 else "white"
                 ax2d.text(
                     j + 0.5,
                     i + 0.5,
                     f"{value:.2f}",
                     ha="center",
                     va="center",
-                    color="black" if abs(value) < 0.6 else "white",
-                    fontsize=8,
-                    fontweight="bold" if highlight or abs(value) >= 0.5 else "normal",
+                    fontsize=10,
+                    fontweight="bold" if highlight else "normal",
+                    color=text_color,
                 )
 
-        # Highlight association between ranking and confusion metrics (lower triangle)
-        if rank_idx is not None and confusion_indices:
-            for metric_idx in confusion_indices:
-                row_idx, col_idx = (metric_idx, rank_idx) if metric_idx >= rank_idx else (rank_idx, metric_idx)
-                rect = Rectangle(
-                    (col_idx, row_idx),
-                    1.0,
-                    1.0,
-                    fill=False,
-                    edgecolor="#1f77b4",
-                    linewidth=2,
-                )
-                ax2d.add_patch(rect)
+        if rank_idx is not None:
+            for idx, metric in enumerate(available_metrics):
+                if metric in confusion_set and idx >= rank_idx:
+                    rect = Rectangle((rank_idx, idx), 1.0, 1.0, fill=False, edgecolor="#1f77b4", linewidth=2)
+                    ax2d.add_patch(rect)
+                if metric in confusion_set and idx < rank_idx:
+                    rect = Rectangle((idx, rank_idx), 1.0, 1.0, fill=False, edgecolor="#1f77b4", linewidth=2)
+                    ax2d.add_patch(rect)
 
         ax2d.set_xticks(np.arange(len(available_metrics)) + 0.5)
         ax2d.set_yticks(np.arange(len(available_metrics)) + 0.5)
-        ax2d.set_xticklabels(available_metrics, rotation=25, ha="right", fontsize=9)
-        ax2d.set_yticklabels(available_metrics, fontsize=9)
-
-        for tick, label in zip(ax2d.get_xticklabels(), available_metrics):
-            label_norm = normalize_metric_name(label)
-            if label_norm in weighted_metrics_norm or label_norm == "rank":
-                tick.set_fontweight("bold")
-
-        for tick, label in zip(ax2d.get_yticklabels(), available_metrics):
-            label_norm = normalize_metric_name(label)
-            if label_norm in weighted_metrics_norm or label_norm == "rank":
-                tick.set_fontweight("bold")
-        ax2d.tick_params(length=0)
-
+        label_map = {"Net Benefit": "Net Benefit"}
+        display_labels = [label_map.get(m, m) for m in available_metrics]
+        ax2d.set_xticklabels(display_labels, rotation=30, ha="right", fontsize=11)
+        ax2d.set_yticklabels(display_labels, fontsize=11)
+        ax2d.set_aspect("auto")
+        for label in ax2d.get_xticklabels():
+            label.set_fontweight("bold" if label.get_text() == "Rank" else "normal")
+        for label in ax2d.get_yticklabels():
+            label.set_fontweight("bold" if label.get_text() == "Rank" else "normal")
+        ax2d.tick_params(length=0, labelsize=10)
+        rect = Rectangle(
+            (0, 0),
+            sum(1 for m in selected_metrics if m in available_metrics),
+            sum(1 for m in selected_metrics if m in available_metrics),
+            fill=False,
+            edgecolor="#222222",
+            linewidth=2.5,
+            linestyle="--",
+        )
+        ax2d.add_patch(rect)
         cbar_c = fig2.colorbar(ax2d.collections[0], ax=ax2d, fraction=0.046, pad=0.04)
-        cbar_c.set_label("Correlation", fontweight="bold", fontsize=10)
+        cbar_c.set_label("Correlation", fontweight="bold", fontsize=12)
+        cbar_c.ax.tick_params(labelsize=10)
 
         ax2d.set_title(
             "D. Metric Correlations with Ranking (Dummy Phase)",
@@ -485,130 +668,7 @@ def generate_figure2() -> Path:
             fontsize=13,
         )
 
-    # Panel F - Model complexity vs final score (dummy phase)
-    ax2f = fig2.add_subplot(gs2[2, :2])
-    resource_cols = ["parsimony_score", "final_score", "inference_time"]
-    if all(col in dummy_phase.columns for col in resource_cols):
-        final_scores_clean = remove_outliers(dummy_phase["final_score"])
-        filtered = dummy_phase.loc[final_scores_clean.index].copy() if not final_scores_clean.empty else dummy_phase.copy()
-
-        parsimony_complement = np.clip(1 - filtered["parsimony_score"], 0, 1)
-        inference_ms = filtered["inference_time"] * 1000
-
-        scatter = ax2f.scatter(
-            parsimony_complement,
-            filtered["final_score"],
-            c=inference_ms,
-            cmap="viridis",
-            alpha=0.8,
-            s=60,
-            edgecolor="black",
-            linewidth=0.4,
-        )
-
-        # Annotate top three unique teams by highest filtered final score
-        if "Team" in filtered.columns:
-            label_series = filtered["Team"].apply(clean_team_label)
-        elif "id" in filtered.columns:
-            label_series = filtered["id"].apply(clean_team_label)
-        else:
-            label_series = pd.Series(filtered.index.astype(str), index=filtered.index)
-        filtered = filtered.assign(label=label_series)
-        annotate_without_overlap(
-            ax2f,
-            parsimony_complement.values,
-            filtered["final_score"].values,
-            filtered["label"].tolist(),
-        )
-
-        ax2f.set_xlabel("Model Simplicity (1 − Parsimony Score)", fontweight="bold")
-        ax2f.set_ylabel("Final Score (Dummy Phase)", fontweight="bold")
-        ax2f.set_title("F. Model Complexity vs Final Score (Dummy Phase)", fontweight="bold", fontsize=13)
-        ax2f.grid(True, alpha=0.3)
-        ax2f.spines["top"].set_visible(False)
-        ax2f.spines["right"].set_visible(False)
-
-        cbar_f = fig2.colorbar(scatter, ax=ax2f, fraction=0.046, pad=0.04)
-        cbar_f.set_label("Inference Time (ms)", fontweight="bold", fontsize=9)
-
-    # Panel H - Weighted metric contributions for top dummy-phase teams
-    ax2h = fig2.add_subplot(gs2[2, 2:])
-    if "Team" in dummy_phase.columns:
-        base_team_series = dummy_phase["Team"]
-    elif "id" in dummy_phase.columns:
-        base_team_series = dummy_phase["id"]
-    else:
-        base_team_series = pd.Series(dummy_phase.index.astype(str), index=dummy_phase.index)
-
-    dummy_phase_labeled = dummy_phase.copy()
-    dummy_phase_labeled["team_label"] = base_team_series.apply(clean_team_label)
-    dummy_phase_labeled["team_label_base"] = dummy_phase_labeled["team_label"].str.replace(r"\d+$", "", regex=True).str.strip()
-
-    top_dummy_all = dummy_phase_labeled.sort_values(by="final_score", ascending=False)
-    top_dummy = top_dummy_all.drop_duplicates(subset="team_label_base", keep="first").head(5)
-
-    if not top_dummy.empty:
-        weight_map = {row["feature"]: row["weight"] for _, row in factor_weights.iterrows()}
-        # Factor-analysis metrics share a combined 90% weight after allocating 5% each
-        # to parsimony and inference time (see Factor_analysis_for_scores_weights.Rmd).
-        factor_share = 1.0 - weight_map.get("Parsimony Score", 0.0) - weight_map.get("Inference Time", 0.0)
-        metrics_for_contrib = ["F1", "AUPRC", "Net.Benefit", "ECE"]
-        normalized_contrib: list[tuple[pd.Series, str]] = []
-
-        for metric in metrics_for_contrib:
-            if metric in top_dummy.columns and metric in weight_map:
-                center, scale = scale_lookup.get(metric, (top_dummy[metric].mean(), top_dummy[metric].std()))
-                if scale == 0 or np.isnan(scale):
-                    scale = 1.0
-                scaled_values = (top_dummy[metric] - center) / scale
-                contrib = scaled_values * weight_map[metric] * factor_share
-                normalized_contrib.append((contrib, metric))
-
-        if "parsimony_score" in top_dummy.columns and "Parsimony Score" in weight_map:
-            parsimony_component = 1 - top_dummy["parsimony_score"].clip(0, 1)
-            contrib = parsimony_component * weight_map["Parsimony Score"]
-            normalized_contrib.append((contrib, "Parsimony (1 - score)"))
-
-        if "inference_time" in top_dummy.columns and "Inference Time" in weight_map:
-            center, scale = scale_lookup.get("Inference Time", (top_dummy["inference_time"].mean(), top_dummy["inference_time"].std()))
-            if scale == 0 or np.isnan(scale):
-                scale = 1.0
-            inf_norm = (top_dummy["inference_time"] - center) / scale
-            contrib = inf_norm * weight_map["Inference Time"]
-            normalized_contrib.append((contrib, "Inference Time"))
-
-        if normalized_contrib:
-            x_pos = np.arange(len(top_dummy))
-            bottom = np.zeros(len(top_dummy))
-            colors_comp = sns.color_palette("Set2", len(normalized_contrib))
-            for i, (contrib_series, label) in enumerate(normalized_contrib):
-                contrib_ordered = contrib_series.reindex(top_dummy.index).values
-                ax2h.bar(
-                    x_pos,
-                    contrib_ordered,
-                    bottom=bottom,
-                    label=label,
-                    color=colors_comp[i],
-                    alpha=0.8,
-                    edgecolor="black",
-                    linewidth=0.5,
-                )
-                bottom += contrib_ordered
-
-            team_labels = top_dummy["team_label"].tolist()
-            ax2h.set_xticks(x_pos)
-            ax2h.set_xticklabels([f"Rank {i + 1}\n{team_labels[i]}" for i in range(len(team_labels))], fontsize=9)
-            ax2h.set_ylabel("Weighted Contribution", fontweight="bold")
-            ax2h.set_title(
-                "H. Weighted Metric Contributions\n(Top Dummy-Phase Teams)",
-                fontweight="bold",
-                fontsize=13,
-            )
-            ax2h.tick_params(axis="x", pad=6)
-            ax2h.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8, frameon=False)
-            ax2h.grid(True, alpha=0.3, axis="y")
-            ax2h.spines["top"].set_visible(False)
-            ax2h.spines["right"].set_visible(False)
+    # Panels F and H were moved to Supplementary figures to streamline the main figure.
 
     output_path = FIGURES_DIR / "results_figure2_factor_analysis.png"
     plt.savefig(output_path, bbox_inches="tight", dpi=300)
