@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
 """Generate Figure 1: Study design overview and decision analytics."""
 
-import re
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import geopandas as gpd
-import pycountry
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import FuncFormatter
 from matplotlib.lines import Line2D
-from matplotlib.cm import ScalarMappable
-from matplotlib.colors import Normalize, to_rgb, to_hex
+from matplotlib.colors import to_rgb, to_hex
 from pathlib import Path
 
 from plot_palette import BASE_PALETTE, get_metric_color, lighten_color
@@ -74,14 +70,6 @@ def extract_team_name(full_name: str) -> str:
     return team_name
 
 
-def normalize_team_key(name: str) -> str:
-    """Return a lowercase alphanumeric key for consistent team matching."""
-    if not isinstance(name, str):
-        return ""
-    ascii_name = name.encode("ascii", errors="ignore").decode("ascii").strip()
-    return "".join(ch.lower() for ch in ascii_name if ch.isalnum())
-
-
 def remove_outliers_nb(data: np.ndarray) -> np.ndarray:
     """Remove extreme net benefit outliers via median ± 3*IQR."""
     data = np.asarray(data)
@@ -126,7 +114,6 @@ def generate_figure1() -> Path:
     prelim_f1["Team_clean"] = prelim_f1["Team"].apply(extract_team_name)
     prelim_youden["Team_clean"] = prelim_youden["Team"].apply(extract_team_name)
     final_scores["Team_clean"] = final_scores["Team_clean"].str.strip()
-    final_scores["Team_key"] = final_scores["Team_clean"].apply(normalize_team_key)
 
     if {"TP", "FP", "FN", "TN"}.issubset(prelim_sens.columns):
         prelim_sens["MCC"] = compute_mcc(
@@ -136,15 +123,15 @@ def generate_figure1() -> Path:
             prelim_sens["TN"],
         )
 
-    fig1 = plt.figure(figsize=(17, 19))
+    fig1 = plt.figure(figsize=(17, 16))
     gs1 = GridSpec(
-        4,
+        3,
         4,
         figure=fig1,
         hspace=0.42,
         wspace=0.36,
         width_ratios=[1.9, 0.9, 0.9, 0.9],
-        height_ratios=[1.0, 1.1, 1.15, 1.2],
+        height_ratios=[1.0, 1.1, 1.25],
     )
     fig1.subplots_adjust(right=0.85)
 
@@ -520,161 +507,6 @@ def generate_figure1() -> Path:
         fontsize=13,
         pad=20,
     )
-
-    # Panel F — Global distribution of finalist teams
-    ax1f = fig1.add_subplot(gs1[3, 0:4])
-    try:
-        leaderboard_info = pd.read_json(PROCESSED_DIR / "leaderboard_with_info.json")
-    except FileNotFoundError:
-        ax1f.axis("off")
-        ax1f.text(
-            0.5,
-            0.5,
-            "Team location metadata unavailable",
-            ha="center",
-            va="center",
-            fontsize=11,
-            fontweight="bold",
-        )
-    else:
-        leaderboard_info["team_key"] = leaderboard_info["team"].apply(normalize_team_key)
-        final_team_keys = final_scores["Team_key"].dropna().unique()
-        team_info = leaderboard_info[leaderboard_info["team_key"].isin(final_team_keys)].copy()
-        team_info = team_info.sort_values("team_key").drop_duplicates("team_key", keep="first")
-
-        country_aliases = {
-            "USA": "United States",
-            "US": "United States",
-            "U.S.A": "United States",
-            "U.S.": "United States",
-            "UK": "United Kingdom",
-            "U.K.": "United Kingdom",
-            "South Korea": "Korea, Republic of",
-            "Republic of Korea": "Korea, Republic of",
-            "Korea": "Korea, Republic of",
-            "Cameroon": "Cameroon",
-            "nan": None,
-        }
-        split_pattern = re.compile(r",|/|&|\band\b", flags=re.IGNORECASE)
-
-        def countries_to_iso(country_field: object) -> list[str]:
-            if not isinstance(country_field, str):
-                return []
-            tokens = [token.strip() for token in split_pattern.split(country_field) if token.strip()]
-            iso_codes: list[str] = []
-            for token in tokens:
-                alias = country_aliases.get(token, token)
-                if alias is None:
-                    continue
-                try:
-                    match = pycountry.countries.lookup(alias)
-                except LookupError:
-                    try:
-                        match = pycountry.countries.lookup(alias.title())
-                    except LookupError:
-                        continue
-                code = match.alpha_3
-                if code not in iso_codes:
-                    iso_codes.append(code)
-            return iso_codes
-
-        country_team_map: dict[str, list[str]] = {}
-        for _, row in team_info.iterrows():
-            display_name = str(row.get("Team_clean", "")).strip()
-            if not display_name:
-                continue
-            for iso_code in countries_to_iso(row.get("Country")):
-                teams = country_team_map.setdefault(iso_code, [])
-                if display_name not in teams:
-                    teams.append(display_name)
-
-        country_counts = {iso: len(names) for iso, names in country_team_map.items()}
-
-        if not country_counts:
-            ax1f.axis("off")
-            ax1f.text(
-                0.5,
-                0.5,
-                "Team location metadata unavailable",
-                ha="center",
-                va="center",
-                fontsize=11,
-                fontweight="bold",
-            )
-        else:
-            world = gpd.read_file(gpd.datasets.get_path("naturalearth_lowres"))
-            world = world[world["name"] != "Antarctica"].copy()
-            world["team_count"] = world["iso_a3"].map(country_counts).fillna(0)
-
-            base_color = "#f0f0f0"
-            edge_color = "#d4d4d4"
-            highlight_cmap = plt.get_cmap("viridis")
-
-            world.plot(ax=ax1f, color=base_color, edgecolor=edge_color, linewidth=0.4)
-            highlighted = world[world["team_count"] > 0]
-
-            if highlighted.empty:
-                ax1f.axis("off")
-                ax1f.text(
-                    0.5,
-                    0.5,
-                    "Team location metadata unavailable",
-                    ha="center",
-                    va="center",
-                    fontsize=11,
-                    fontweight="bold",
-                )
-            else:
-                highlighted.plot(
-                    ax=ax1f,
-                    column="team_count",
-                    cmap=highlight_cmap,
-                    linewidth=0.6,
-                    edgecolor="#555555",
-                    legend=False,
-                )
-
-                max_count = highlighted["team_count"].max()
-                for _, row in highlighted.iterrows():
-                    iso = row.get("iso_a3")
-                    names = country_team_map.get(iso, [])
-                    if not names:
-                        continue
-                    label_text = "\n".join(names)
-                    point = row.geometry.representative_point()
-                    text_color = "#1b1b1b"
-                    bbox_kwargs = {
-                        "facecolor": "white",
-                        "alpha": 0.75,
-                        "edgecolor": "#333333",
-                        "linewidth": 0.4,
-                        "boxstyle": "round,pad=0.28",
-                    }
-                    ax1f.text(
-                        point.x,
-                        point.y,
-                        label_text,
-                        ha="center",
-                        va="center",
-                        fontsize=9,
-                        fontweight="bold",
-                        color=text_color,
-                        bbox=bbox_kwargs,
-                    )
-
-                ax1f.set_xlim(-180, 180)
-                ax1f.set_ylim(-60, 90)
-                ax1f.set_axis_off()
-
-                norm = Normalize(vmin=1, vmax=max_count)
-                scalar_map = ScalarMappable(norm=norm, cmap=highlight_cmap)
-                scalar_map.set_array([])
-                cbar = fig1.colorbar(scalar_map, ax=ax1f, orientation="horizontal", fraction=0.05, pad=0.08)
-                cbar.set_label("Number of Finalist Teams", fontweight="bold", fontsize=12)
-                cbar.set_ticks(np.arange(1, max_count + 1))
-                cbar.ax.tick_params(labelsize=10)
-
-    ax1f.set_title("F. Global Distribution of Finalist Teams", fontweight="bold", fontsize=13, pad=12)
 
     output_path = FIGURES_DIR / "results_figure1_overview.png"
     plt.savefig(output_path, bbox_inches="tight", dpi=300)
