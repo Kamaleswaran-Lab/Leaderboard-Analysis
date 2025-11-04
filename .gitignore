@@ -1,0 +1,35 @@
+labels.csv
+
+# macOS
+.DS_Store
+*/.DS_Store
+
+# PNG files
+*.png
+!figures/supplementary/results_supplementary_figure1.png
+!figures/supplementary/results_supplementary_figure2.png
+!figures/supplementary/results_supplementary_correlations.png
+
+# Documents
+*.docx
+*.ppt
+*.pptm
+*.pptx
+
+# CSV files (keep specific ones in git if needed by uncommenting)
+*.csv
+!data/processed/correlation_matrix_spearman_detailed.csv
+# !important_file.csv
+
+# Log files
+*.log
+log/
+
+*.code-workspace
+*.zip/
+.Rhistory
+
+# Output folders
+output/
+output*/
+outputs_*/
