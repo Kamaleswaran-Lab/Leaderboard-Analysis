@@ -585,7 +585,16 @@ def generate_figure2() -> Path:
             dummy_phase_ranked["TN"],
         )
 
+    # Compute normalized inference time (i_norm) using scale lookup if possible and include it
     heatmap_df = dummy_phase_ranked.copy()
+    try:
+        center, scale = scale_lookup.get("Inference Time", (None, None))
+        if center is not None and "inference_time" in heatmap_df.columns:
+            heatmap_df["Inference Time (norm)"] = (
+                pd.to_numeric(heatmap_df["inference_time"], errors="coerce") - center
+            ) / scale
+    except Exception:
+        pass
     # Keep human-friendly label for Net.Benefit only; do not include final_score (scaled weighted score)
     rename_map = {"Net.Benefit": "Net Benefit"}
     heatmap_df = heatmap_df.rename(columns=rename_map)
@@ -604,6 +613,9 @@ def generate_figure2() -> Path:
     other_metrics = ["AUC", "Specificity", "Precision", "MCC"]
     if parsimony_col_for_heatmap is not None:
         other_metrics.append(parsimony_col_for_heatmap)
+    # add normalized inference time if present
+    if "Inference Time (norm)" in heatmap_df.columns:
+        other_metrics.append("Inference Time (norm)")
     confusion_metrics = ["TP", "FP", "TN", "FN", "Rank"]
     heatmap_metrics = selected_metrics + other_metrics + confusion_metrics
     available_metrics = [m for m in heatmap_metrics if m in heatmap_df.columns]
