@@ -25,9 +25,10 @@ library(stringr)
 ## 1. Load & Clean Data
 
 ```{r}
+
 # 1.1 Read leaderboard JSON
 df_leaderboard <- as_tibble(
-  fromJSON("leaderboard_with_info.json")
+  fromJSON("data/processed/leaderboard_with_info.json")
 )
 
 # 1.2 Read evaluation metrics CSV
@@ -182,8 +183,8 @@ inf_scaled <- (dev_data$`Inference Time` - scale_params$center["Inference Time"]
 
 inf_speed <- -inf_scaled
 # 4. Load factor‐analysis loadings and validation params
-factor_loadings <- fromJSON("factor_loadings.json")
-val_params       <- fromJSON("validation_scaling_params.json")
+factor_loadings <- fromJSON("data/processed/factor_loadings.json")
+val_params       <- fromJSON("data/processed/validation_scaling_params.json")
 
 # 5. Compute raw factor score
 raw_factor_dev <- as.vector(scaled_dev_metrics %*% unlist(factor_loadings))
@@ -217,7 +218,7 @@ z_params <- list(
 )
 write_json(
   z_params,
-  "zscore_params.json",
+  "data/processed/zscore_params.json",
   auto_unbox = TRUE,
   pretty = TRUE
 )
@@ -231,7 +232,7 @@ dev_scores <- tibble(
 )
 write.csv(
   dev_scores,
-  "development_scores.csv",
+  "data/processed/development_scores.csv",
   row.names = FALSE
 )
 
@@ -275,7 +276,7 @@ library(dplyr)
 
 # 4.1 Load data to score
 new_data <- read.csv(
-  "evaluation_metrics_sensitivity_method.csv",
+  "data/processed/evaluation_metrics_sensitivity_method_parsimony.csv",
   stringsAsFactors = FALSE
 )
 
@@ -301,7 +302,7 @@ i_norm <- (new_data$inference_time - scale_params$center["Inference Time"]) /
 raw_combo <- raw_factor * (1 - wp - wi) + inv_parsimony * wp + i_norm * wi
 
 # 4.3 Apply z-score transform using saved parameters
-zparams <- fromJSON("zscore_params.json")
+zparams <- fromJSON("data/processed/zscore_params.json")
 final_z <- (raw_combo - zparams$center) / zparams$scale
 
 # 4.4 Save scored results
@@ -312,10 +313,11 @@ new_data_scored <- new_data %>%
   )
 write.csv(
   new_data_scored,
-  "final_scores_new_full.csv",
+  "data/processed/Dummy_phase_scores_new_full.csv",
   row.names = FALSE
 )
 
 head(new_data_scored)
+#dat <- read.csv("/Users/akn30/leaderboard_analysis/final_scores_new_full.csv")
 
 ```
