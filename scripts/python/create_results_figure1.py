@@ -102,11 +102,24 @@ def generate_figure1() -> Path:
     """Create Figure 1 and return the output path."""
     print("\n📈 Creating Figure 1: Study Design and Participant Flow...")
 
+
     final_scores = pd.read_csv(RAW_DIR / "final_scores.csv")
     prelim_sens = pd.read_csv(PRELIM_DIR / "evaluation_metrics_sensitivity_method.csv")
     prelim_f1 = pd.read_csv(PRELIM_DIR / "evaluation_metrics_f1_method.csv")
     prelim_youden = pd.read_csv(PRELIM_DIR / "evaluation_metrics_youden_method.csv")
     validation_sens = pd.read_csv(VALIDATION_DIR / "evaluation_metrics_sensitivity_method.csv")
+
+    # Remove outlier submissions with AUC <= 0.5
+    if "AUC" in prelim_sens.columns:
+        prelim_sens = prelim_sens[prelim_sens["AUC"] > 0.5]
+    if "AUC" in prelim_f1.columns:
+        prelim_f1 = prelim_f1[prelim_f1["AUC"] > 0.5]
+    if "AUC" in prelim_youden.columns:
+        prelim_youden = prelim_youden[prelim_youden["AUC"] > 0.5]
+    if "AUC" in validation_sens.columns:
+        validation_sens = validation_sens[validation_sens["AUC"] > 0.5]
+    if "AUC" in final_scores.columns:
+        final_scores = final_scores[final_scores["AUC"] > 0.5]
 
     final_scores["Team_clean"] = final_scores["Team name"].str.encode("ascii", errors="ignore").str.decode("ascii")
     validation_sens["Team_clean"] = validation_sens["Team"].apply(extract_team_name)
@@ -114,6 +127,9 @@ def generate_figure1() -> Path:
     prelim_f1["Team_clean"] = prelim_f1["Team"].apply(extract_team_name)
     prelim_youden["Team_clean"] = prelim_youden["Team"].apply(extract_team_name)
     final_scores["Team_clean"] = final_scores["Team_clean"].str.strip()
+
+    # Do not filter by AUC; include all teams
+    # Do NOT filter validation_sens by AUC
 
     if {"TP", "FP", "FN", "TN"}.issubset(prelim_sens.columns):
         prelim_sens["MCC"] = compute_mcc(
@@ -350,14 +366,14 @@ def generate_figure1() -> Path:
         )
     )
 
-    treat_all_arrays = [compute_treat_all_nb(prelim_sens), compute_treat_all_nb(prelim_youden), compute_treat_all_nb(prelim_f1)]
-    treat_all_arrays = [arr for arr in treat_all_arrays if arr.size > 0]
-    treat_all_baseline = None
-    if treat_all_arrays:
-        treat_all_combined = np.concatenate(treat_all_arrays)
-        treat_all_filtered = remove_outliers_nb(treat_all_combined)
-        if treat_all_filtered.size > 0:
-            treat_all_baseline = np.median(treat_all_filtered)
+
+    # Compute treat-all baseline for each method
+    treat_all_sens = compute_treat_all_nb(prelim_sens)
+    treat_all_youden = compute_treat_all_nb(prelim_youden)
+    treat_all_f1 = compute_treat_all_nb(prelim_f1)
+    treat_all_sens_median = np.median(treat_all_sens) * 100.0
+    treat_all_youden_median = np.median(treat_all_youden) * 100.0
+    treat_all_f1_median = np.median(treat_all_f1) * 100.0
 
     methods_nb_percent = {k: v * 100.0 for k, v in methods_nb_clean.items()}
     positions = [0, 1, 2]
@@ -374,15 +390,9 @@ def generate_figure1() -> Path:
     ax1c.set_ylabel("Net Benefit (percent)", fontweight="bold")
     ax1c.set_title("C. Net Benefit by Threshold Method\n(Preliminary Phase)", fontweight="bold", fontsize=13)
     ax1c.axhline(y=0, color="red", linestyle="--", linewidth=1, alpha=0.5, label="Treat-none baseline")
-    if treat_all_baseline is not None:
-        treat_all_percent = treat_all_baseline * 100.0
-        ax1c.axhline(
-            y=treat_all_percent,
-            color="#8E44AD",
-            linestyle=":",
-            linewidth=2,
-            label=f"Treat-all baseline (median NB = {treat_all_percent:.1f} percent)",
-        )
+    ax1c.axhline(y=treat_all_sens_median, color="#8E44AD", linestyle=":", linewidth=2, label=f"Treat-all Sensitivity (median NB = {treat_all_sens_median:.1f}%)")
+    ax1c.axhline(y=treat_all_youden_median, color="#27AE60", linestyle=":", linewidth=2, label=f"Treat-all Youden (median NB = {treat_all_youden_median:.1f}%)")
+    ax1c.axhline(y=treat_all_f1_median, color="#2980B9", linestyle=":", linewidth=2, label=f"Treat-all F1 (median NB = {treat_all_f1_median:.1f}%)")
     ax1c.legend(loc="best", fontsize=8)
     ax1c.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:.0f}"))
     ax1c.grid(True, alpha=0.3, axis="y")
@@ -398,13 +408,11 @@ def generate_figure1() -> Path:
     metrics_display = ["F1", "ECE", "AUPRC", "AUC", "Sensitivity", "Specificity", "Precision"]
 
     def remove_outliers_iqr_series(series: pd.Series) -> pd.Series:
-        q1, q3 = series.quantile([0.25, 0.75])
-        iqr = q3 - q1
-        lower_bound = q1 - 3 * iqr
-        upper_bound = q3 + 3 * iqr
-        mask = (series >= lower_bound) & (series <= upper_bound)
-        filtered = series[mask]
-        return filtered if len(filtered) > 0 else series
+        # Outlier trimming disabled per user request: return raw (non-missing) series.
+        # Previous behaviour used a 3*IQR trimming; that removed valid values for
+        # metrics with low uniqueness (e.g., Sensitivity). Use the raw data so
+        # distributions reflect the post-AUC-filter universe directly.
+        return series
 
     metrics_data = []
     for metric in metrics_to_plot:
@@ -434,7 +442,8 @@ def generate_figure1() -> Path:
     ax1d.set_xticks(positions)
     ax1d.set_xticklabels(metrics_display, rotation=45, ha="right")
     ax1d.set_ylabel("Metric Value", fontweight="bold")
-    ax1d.set_title("D. Key Performance Metrics Distribution\n(Preliminary Phase, Outliers Removed)", fontweight="bold", fontsize=13)
+    # Note: outlier trimming removed; distributions are plotted from raw post-AUC values
+    ax1d.set_title("D. Key Performance Metrics Distribution\n(Preliminary Phase)", fontweight="bold", fontsize=13)
     ax1d.grid(True, alpha=0.3, axis="y")
     ax1d.spines["top"].set_visible(False)
     ax1d.spines["right"].set_visible(False)
@@ -444,7 +453,7 @@ def generate_figure1() -> Path:
     # Panel E
     ax1e = fig1.add_subplot(gs1[2, 0:4])
     metrics_for_corr = ["AUC", "AUPRC", "F1", "Sensitivity", "Specificity", "Precision", "Net Benefit", "ECE", "MCC"]
-    corr_data = prelim_sens[metrics_for_corr].corr()
+    corr_data = prelim_sens[metrics_for_corr].corr(method="spearman")
     selected_metrics = ["Sensitivity", "AUPRC", "Net Benefit", "F1", "ECE"]
     other_metrics = ["AUC", "Specificity", "Precision", "MCC"]
     metric_order = selected_metrics + other_metrics

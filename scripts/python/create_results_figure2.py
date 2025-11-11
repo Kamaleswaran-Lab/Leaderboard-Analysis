@@ -205,6 +205,17 @@ def generate_figure2() -> Path:
     final_scores = pd.read_csv(RAW_DIR / "final_scores.csv")
     prelim_sens = pd.read_csv(PRELIM_DIR / "evaluation_metrics_sensitivity_method.csv")
     dummy_phase = pd.read_csv(PROCESSED_DIR / "Dummy_phase_scores_new_full.csv")
+    # Remove AUC outliers (AUC < 0.5) for consistency with Figure 1 pipeline
+    if "AUC" in dummy_phase.columns:
+        before_n = len(dummy_phase)
+        dummy_phase = dummy_phase[dummy_phase["AUC"] > 0.5].copy()
+        after_n = len(dummy_phase)
+        print(f"Applied AUC > 0.5 filter to Dummy phase: {before_n} -> {after_n} submissions")
+    if "AUC" in prelim_sens.columns:
+        before_p = len(prelim_sens)
+        prelim_sens = prelim_sens[prelim_sens["AUC"] > 0.5].copy()
+        after_p = len(prelim_sens)
+        print(f"Applied AUC > 0.5 filter to Preliminary phase: {before_p} -> {after_p} submissions")
     scale_params_df = pd.read_csv(PROCESSED_DIR / "scale_params.csv")
     scale_lookup = {
         row["feature"]: (row["center"], row["scale"])
@@ -387,7 +398,8 @@ def generate_figure2() -> Path:
                     break
             if series is None:
                 continue
-            cleaned = remove_outliers(series.dropna())
+            # Use raw values (drop NA) for distributions — no IQR outlier removal
+            cleaned = series.dropna()
             if cleaned.empty:
                 continue
             for value in cleaned:
@@ -438,12 +450,13 @@ def generate_figure2() -> Path:
                     if not values.empty:
                         ax.axvline(values.iloc[0], color=palette_lookup.get(phase, metric_color), linestyle="--", linewidth=1.0)
                     continue
+                alpha_val = 0.75 if phase == "Dummy Phase" else 0.35
                 sns.kdeplot(
                     data=phase_subset,
                     x="value",
                     fill=True,
                     common_norm=False,
-                    alpha=0.45,
+                    alpha=alpha_val,
                     linewidth=1.2,
                     color=palette_lookup.get(phase, metric_color),
                     ax=ax,
@@ -573,20 +586,31 @@ def generate_figure2() -> Path:
         )
 
     heatmap_df = dummy_phase_ranked.copy()
-    rename_map = {
-        "Net.Benefit": "Net Benefit",
-        "final_score": "Scaled Weighted Score",
-    }
+    # Keep human-friendly label for Net.Benefit only; do not include final_score (scaled weighted score)
+    rename_map = {"Net.Benefit": "Net Benefit"}
     heatmap_df = heatmap_df.rename(columns=rename_map)
 
+    # Use parsimony as-is (do not invert). Prefer the processed column name `parsimony_score`
+    # but accept title-cased variants if present. This ensures the heatmap shows the raw
+    # parsimony measure rather than 1 - parsimony.
+    parsimony_col_for_heatmap = None
+    if "parsimony_score" in heatmap_df.columns:
+        parsimony_col_for_heatmap = "parsimony_score"
+    elif "Parsimony Score" in heatmap_df.columns:
+        parsimony_col_for_heatmap = "Parsimony Score"
+
     selected_metrics = ["Sensitivity", "AUPRC", "Net Benefit", "F1", "ECE"]
-    other_metrics = ["AUC", "Specificity", "Precision", "MCC", "Scaled Weighted Score"]
+    # Insert parsimony column name if available
+    other_metrics = ["AUC", "Specificity", "Precision", "MCC"]
+    if parsimony_col_for_heatmap is not None:
+        other_metrics.append(parsimony_col_for_heatmap)
     confusion_metrics = ["TP", "FP", "TN", "FN", "Rank"]
     heatmap_metrics = selected_metrics + other_metrics + confusion_metrics
     available_metrics = [m for m in heatmap_metrics if m in heatmap_df.columns]
 
     if len(available_metrics) >= 3:
-        corr_matrix = heatmap_df[available_metrics].corr()
+        # Use Spearman correlation (rank-based) and ensure AUC outliers already removed
+        corr_matrix = heatmap_df[available_metrics].corr(method="spearman")
 
         from matplotlib.patches import Rectangle
 
