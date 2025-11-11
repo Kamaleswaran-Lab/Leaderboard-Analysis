@@ -599,23 +599,18 @@ def generate_figure2() -> Path:
     rename_map = {"Net.Benefit": "Net Benefit"}
     heatmap_df = heatmap_df.rename(columns=rename_map)
 
-    # Use parsimony as-is (do not invert). Prefer the processed column name `parsimony_score`
-    # but accept title-cased variants if present. This ensures the heatmap shows the raw
-    # parsimony measure rather than 1 - parsimony.
-    parsimony_col_for_heatmap = None
+    # Compute derived metrics for heatmap: Parsimony (1-score) and Inference Speed
     if "parsimony_score" in heatmap_df.columns:
-        parsimony_col_for_heatmap = "parsimony_score"
+        heatmap_df["Parsimony (1-score)"] = 1.0 - pd.to_numeric(heatmap_df["parsimony_score"], errors="coerce")
     elif "Parsimony Score" in heatmap_df.columns:
-        parsimony_col_for_heatmap = "Parsimony Score"
+        heatmap_df["Parsimony (1-score)"] = 1.0 - pd.to_numeric(heatmap_df["Parsimony Score"], errors="coerce")
+    if "inference_time" in heatmap_df.columns:
+        inf_time = pd.to_numeric(heatmap_df["inference_time"], errors="coerce")
+        heatmap_df["Inference Speed"] = np.where(inf_time > 0, 1.0 / inf_time, np.nan)
 
     selected_metrics = ["Sensitivity", "AUPRC", "Net Benefit", "F1", "ECE"]
-    # Insert parsimony column name if available
-    other_metrics = ["AUC", "Specificity", "Precision", "MCC"]
-    if parsimony_col_for_heatmap is not None:
-        other_metrics.append(parsimony_col_for_heatmap)
-    # add normalized inference time if present
-    if "Inference Time (norm)" in heatmap_df.columns:
-        other_metrics.append("Inference Time (norm)")
+    # Use derived metrics in heatmap
+    other_metrics = ["AUC", "Specificity", "Precision", "MCC", "Inference Speed", "Parsimony (1-score)"]
     confusion_metrics = ["TP", "FP", "TN", "FN", "Rank"]
     heatmap_metrics = selected_metrics + other_metrics + confusion_metrics
     available_metrics = [m for m in heatmap_metrics if m in heatmap_df.columns]
