@@ -109,6 +109,13 @@ def generate_figure1() -> Path:
     prelim_youden = pd.read_csv(PRELIM_DIR / "evaluation_metrics_youden_method.csv")
     validation_sens = pd.read_csv(VALIDATION_DIR / "evaluation_metrics_sensitivity_method.csv")
 
+    # Keep unfiltered copies to display true participant counts in Panel A
+    prelim_sens_all = prelim_sens.copy()
+    prelim_f1_all = prelim_f1.copy()
+    prelim_youden_all = prelim_youden.copy()
+    validation_sens_all = validation_sens.copy()
+    final_scores_all = final_scores.copy()
+
     # Remove outlier submissions with AUC <= 0.5
     if "AUC" in prelim_sens.columns:
         prelim_sens = prelim_sens[prelim_sens["AUC"] > 0.5]
@@ -121,6 +128,14 @@ def generate_figure1() -> Path:
     if "AUC" in final_scores.columns:
         final_scores = final_scores[final_scores["AUC"] > 0.5]
 
+    # create cleaned team labels for the unfiltered copies (used in Panel A)
+    final_scores_all["Team_clean"] = final_scores_all["Team name"].str.encode("ascii", errors="ignore").str.decode("ascii").str.strip()
+    validation_sens_all["Team_clean"] = validation_sens_all["Team"].apply(extract_team_name)
+    prelim_sens_all["Team_clean"] = prelim_sens_all["Team"].apply(extract_team_name)
+    prelim_f1_all["Team_clean"] = prelim_f1_all["Team"].apply(extract_team_name)
+    prelim_youden_all["Team_clean"] = prelim_youden_all["Team"].apply(extract_team_name)
+
+    # Now apply existing cleaning/filtering to the working dataframes (these may be filtered by AUC later)
     final_scores["Team_clean"] = final_scores["Team name"].str.encode("ascii", errors="ignore").str.decode("ascii")
     validation_sens["Team_clean"] = validation_sens["Team"].apply(extract_team_name)
     prelim_sens["Team_clean"] = prelim_sens["Team"].apply(extract_team_name)
@@ -153,12 +168,13 @@ def generate_figure1() -> Path:
 
     # Panel A
     ax1a = fig1.add_subplot(gs1[0, 0])
-    n_prelim = len(prelim_sens)
-    n_prelim_teams = prelim_sens["Team_clean"].nunique()
-    n_valid = len(validation_sens)
-    n_valid_teams = validation_sens["Team_clean"].nunique()
-    n_final_subs = len(final_scores)
-    n_final_teams = final_scores["Team name"].nunique()
+    # counts and unique teams per phase — use unfiltered copies so Panel A shows all participants
+    n_prelim = len(prelim_sens_all)
+    n_prelim_teams = prelim_sens_all["Team_clean"].nunique()
+    n_valid = len(validation_sens_all)
+    n_valid_teams = validation_sens_all["Team_clean"].nunique()
+    n_final_subs = len(final_scores_all)
+    n_final_teams = final_scores_all["Team_clean"].nunique()
 
     print(
         "  Panel A - Phase participation: Prelim={0} ({1} teams), Validation={2} ({3} teams), Final={4} ({5} teams)".format(
@@ -207,9 +223,6 @@ def generate_figure1() -> Path:
     ax1a.set_title("A. Multi-Phase Participation", fontweight="bold", fontsize=13)
     ax1a.set_ylim(0, max(total_values) * 1.15)
     ax1a.grid(True, alpha=0.3, axis="y")
-    ax1a.spines["top"].set_visible(False)
-    ax1a.spines["right"].set_visible(False)
-
     # Panel B
     ax1b = fig1.add_subplot(gs1[0, 1:])
     sens_thresholds = [0.70, 0.75, 0.80, 0.85, 0.90]
@@ -366,6 +379,23 @@ def generate_figure1() -> Path:
         )
     )
 
+    # Statistical diff test p-values between each method (Mann-Whitney U)
+    from scipy.stats import mannwhitneyu
+    method_names = list(methods_nb_clean.keys())
+    pval_matrix = np.full((3, 3), np.nan)
+    stat_matrix = np.full((3, 3), np.nan)
+    for i in range(3):
+        for j in range(i+1, 3):
+            x = methods_nb_clean[method_names[i]]
+            y = methods_nb_clean[method_names[j]]
+            if len(x) > 0 and len(y) > 0:
+                stat, pval = mannwhitneyu(x, y, alternative="two-sided")
+                pval_matrix[i, j] = pval
+                pval_matrix[j, i] = pval
+                stat_matrix[i, j] = stat
+                stat_matrix[j, i] = stat
+
+
 
     # Compute treat-all baseline for each method
     treat_all_sens = compute_treat_all_nb(prelim_sens)
@@ -393,11 +423,94 @@ def generate_figure1() -> Path:
     ax1c.axhline(y=treat_all_sens_median, color="#8E44AD", linestyle=":", linewidth=2, label=f"Treat-all Sensitivity (median NB = {treat_all_sens_median:.1f}%)")
     ax1c.axhline(y=treat_all_youden_median, color="#27AE60", linestyle=":", linewidth=2, label=f"Treat-all Youden (median NB = {treat_all_youden_median:.1f}%)")
     ax1c.axhline(y=treat_all_f1_median, color="#2980B9", linestyle=":", linewidth=2, label=f"Treat-all F1 (median NB = {treat_all_f1_median:.1f}%)")
-    ax1c.legend(loc="best", fontsize=8)
+    # Move legend slightly inside the plot area at bottom-left to keep it visible but within axes
+    ax1c.legend(loc="lower left", bbox_to_anchor=(0.03, 0.03), fontsize=8, ncol=1, frameon=True)
     ax1c.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:.0f}"))
     ax1c.grid(True, alpha=0.3, axis="y")
     ax1c.spines["top"].set_visible(False)
     ax1c.spines["right"].set_visible(False)
+
+    # Draw lines between each pair of methods and annotate with p-value
+    # Place lines and p-values at the very top of the plot
+    # Find the current y-axis max and extend if needed
+    y_max = max([np.max(v) if len(v) > 0 else 0 for v in methods_nb_percent.values()])
+    # Place each comparison line just above the top of the violins but not overlapping.
+    n_comparisons = 3
+    # base just above the data max, then stagger so lines are separated but not overlapping
+    y_base = y_max + 1.0
+    # loosen spacing per request (increase vertical separation between comparison lines)
+    stagger = 2.1
+    # compute offsets but ensure we stay under the requested display cap (15)
+    y_offsets = [min(y_base + stagger * k, 14.0 - stagger * (n_comparisons - 1 - k)) for k in range(n_comparisons)]
+    ax1c.set_ylim(None, 15)
+    # Assign y_offsets so the longest horizontal comparison (largest x1-x0)
+    # is placed at the highest y (so its connector is longest).
+    pair_list = []
+    for i in range(3):
+        for j in range(i + 1, 3):
+            pair_list.append((i, j))
+    # compute widths and sort pairs by width (ascending)
+    pair_widths = {pair: abs(positions[pair[1]] - positions[pair[0]]) for pair in pair_list}
+    pair_list_sorted = sorted(pair_list, key=lambda p: pair_widths[p])
+    # map each pair to a y_offset so smallest width -> lowest y, largest width -> highest y
+    pair_to_y = {pair: y for pair, y in zip(pair_list_sorted, y_offsets)}
+
+    # draw comparisons in arbitrary order but use assigned offsets
+    for (i, j), y_line in pair_to_y.items():
+        x0, x1 = positions[i], positions[j]
+        # Draw a horizontal line at y_line between the two methods (draw first, behind p-value box)
+        ax1c.plot([x0, x1], [y_line, y_line], color="#555", linestyle="--", linewidth=1.2, alpha=0.8, zorder=6)
+        # Add short vertical connector ticks from top of each violin up to the comparison line
+        try:
+            name_i = method_names[i]
+            name_j = method_names[j]
+            top_i = np.max(methods_nb_percent.get(name_i, np.array([0]))) if len(methods_nb_percent.get(name_i, [])) > 0 else 0
+            top_j = np.max(methods_nb_percent.get(name_j, np.array([0]))) if len(methods_nb_percent.get(name_j, [])) > 0 else 0
+        except Exception:
+            top_i = top_j = 0
+        vpad = 0.45  # increased vertical padding so connectors sit clearly below p-value text and are more separated vertically
+        # draw vertical ticks if they won't overlap (start a bit above top)
+        yi0 = top_i + vpad
+        yi1 = top_j + vpad
+        # draw connectors behind the p-value box
+        ax1c.plot([x0, x0], [yi0, y_line], color="#555", linewidth=0.9, alpha=0.6, zorder=5)
+        ax1c.plot([x1, x1], [yi1, y_line], color="#555", linewidth=0.9, alpha=0.6, zorder=5)
+        # Annotate with p-value in the middle of the comparison line
+        xm = (x0 + x1) / 2
+        pval = pval_matrix[i, j]
+        if not np.isnan(pval):
+            # calculate significance stars
+            if pval < 0.001:
+                star = "***"
+            elif pval < 0.01:
+                star = "**"
+            elif pval < 0.05:
+                star = "*"
+            else:
+                star = ""
+            # place p-value annotation centered on the comparison line, with opaque bbox so the line passes visually behind it
+            text_label = f"p={pval:.2g}" + (f" {star}" if star else "")
+            ax1c.text(
+                xm,
+                y_line,
+                text_label,
+                ha="center",
+                va="center",
+                fontsize=9,
+                fontweight="bold",
+                color="#222",
+                bbox=dict(boxstyle="round,pad=0.14", facecolor="white", alpha=1.0, edgecolor="#888"),
+                zorder=12,
+            )
+    # Write statistical test info to stats TXT file
+    stats_txt_path = FIGURES_DIR / "figure1_stats.txt"
+    with open(stats_txt_path, "a") as f:
+        f.write("\n--- Panel C: Pairwise Mann-Whitney U test results ---\n")
+        for i in range(3):
+            for j in range(i+1, 3):
+                stat = stat_matrix[i, j]
+                pval = pval_matrix[i, j]
+                f.write(f"{method_names[i]} vs {method_names[j]}: U={stat:.2f}, p={pval:.3g}\n")
 
     # Panel D
     ax1d = fig1.add_subplot(gs1[1, 1:4])
