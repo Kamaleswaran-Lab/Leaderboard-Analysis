@@ -4,7 +4,7 @@ This repository contains the paper figures and aggregate submission results for 
 
 ## Leaderboard
 
-[Download the current leaderboard](data/raw/final_scores.csv). The CSV retains full-precision scores, submission identifiers, thresholds, confusion counts, calibration metrics and the submission-recorded runtime/parsimony terms. Displayed ranks use dense ranking of scores rounded to two decimals; rows follow continuous scores. Of 36 final candidates, 34 meet the sensitivity threshold of 0.80. Patient-level uncertainty summaries cover 32 eligible submissions with verified probability files.
+[Download the current leaderboard](data/raw/final_scores.csv). The public CSV contains only rank, team name, submission version, full-precision composite score, AUROC, AUPRC, F1, sensitivity, specificity, ECE, Net Benefit, confusion counts, and the runtime/parsimony metrics used in the paper. `Submission` is the version number. Internal folder identifiers, timestamps, audit flags, historical ranks, Docker image identifiers and source-code hashes are excluded. Displayed ranks use dense ranking of scores rounded to two decimals; rows follow continuous scores. Of 36 final candidates, 34 meet the sensitivity threshold of 0.80. Patient-level uncertainty summaries cover 32 eligible submissions with verified probability files.
 
 ## Main figures
 

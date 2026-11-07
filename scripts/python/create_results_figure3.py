@@ -112,6 +112,7 @@ def generate_figure3() -> Path:
     """
     # Load and process final_scores (single canonical load)
     final_scores = pd.read_csv(RAW_DIR / "final_scores.csv")
+    final_scores["sub_num"] = pd.to_numeric(final_scores["Submission"], errors="raise").astype(int)
     final_scores["Team_clean"] = final_scores["Team name"].apply(extract_team_name)
 
     if "Parsimony Score" in final_scores.columns:
