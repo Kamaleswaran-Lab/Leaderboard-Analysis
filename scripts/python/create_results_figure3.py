@@ -7,6 +7,8 @@ from pathlib import Path
 import json
 import re
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -34,12 +36,12 @@ plt.rcParams.update(
     {
         "figure.dpi": 300,
         "savefig.dpi": 300,
-        "font.size": 10,
-        "axes.labelsize": 11,
-        "axes.titlesize": 12,
-        "xtick.labelsize": 9,
-        "ytick.labelsize": 9,
-        "legend.fontsize": 9,
+        "font.size": 11,
+        "axes.labelsize": 12,
+        "axes.titlesize": 13,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "legend.fontsize": 10,
     }
 )
 
@@ -84,132 +86,33 @@ def extract_team_name(raw: str) -> str:
     return name.strip()
 
 
-def load_extended_final_scores() -> pd.DataFrame:
-    """Parse the extended final-phase CSV that includes parsimony and inference metrics."""
-    eva_path = RAW_DIR / "Eva_csv - Sheet1.csv"
-    if not eva_path.exists():
-        return pd.DataFrame(columns=["Team_clean"])
-
-    raw_df = pd.read_csv(eva_path)
-    parsed_records: list[dict[str, object]] = []
-    key_map = {
-        "weighted_score": "Weighted Score",
-        "scaled_weighted_score": "Scaled Weighted Score",
-        "tp": "TP",
-        "fp": "FP",
-        "fn": "FN",
-        "tn": "TN",
-        "threshold_used": "Optimal Threshold",
-    }
-
-    for _, row in raw_df.iterrows():
-        payload = row.get("Evaluated_1")
-        if not isinstance(payload, str) or "score" not in payload:
-            continue
-        try:
-            parsed = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
-        score = parsed.get("score", {})
-        if not isinstance(score, dict) or not score:
-            continue
-
-        record: dict[str, object] = {
-            "Team name": row.get("Team name"),
-            "Team_clean": extract_team_name(row.get("Team name", "")),
-        }
-        for key, value in score.items():
-            mapped = key_map.get(key, key)
-            record[mapped] = value
-        parsed_records.append(record)
-
-    if not parsed_records:
-        return pd.DataFrame(columns=["Team_clean"])
-
-    parsed_df = pd.DataFrame(parsed_records)
-    numeric_cols = [col for col in parsed_df.columns if col not in {"Team name", "Team_clean"}]
-    parsed_df[numeric_cols] = parsed_df[numeric_cols].apply(pd.to_numeric, errors="coerce")
-
-    if "Scaled Weighted Score" in parsed_df.columns:
-        parsed_df = parsed_df.sort_values("Scaled Weighted Score", ascending=False, na_position="last")
-    parsed_df = parsed_df.dropna(subset=["Team_clean"])
-    parsed_df = parsed_df.drop_duplicates(subset="Team_clean", keep="first")
-    return parsed_df
-
-
 def build_contribution_table(top_scores: pd.DataFrame) -> pd.DataFrame:
-    """Compute weighted contributions for final-phase top performers."""
-    scale_df = pd.read_csv(PROCESSED_DIR / "scale_params.csv")
-    scale_lookup = {row.feature: (row.center, row.scale) for _, row in scale_df.iterrows()}
-
-    weights_df = pd.read_csv(PROCESSED_DIR / "factor_weights.csv")
-    weight_map = dict(zip(weights_df.feature, weights_df.weight))
-    factor_share = 1.0 - weight_map.get("Parsimony Score", 0.0) - weight_map.get("Inference Time", 0.0)
-
-    metric_columns = {
-        "F1": "F1",
-        "AUPRC": "AUPRC",
-        "Net.Benefit": "Net.Benefit",
-        "ECE": "ECE",
-    }
-
-    contribution_parts: dict[str, pd.Series] = {}
-    for feature, column in metric_columns.items():
-        if column not in top_scores.columns or feature not in weight_map:
-            continue
-        center, scale = scale_lookup.get(feature, (top_scores[column].mean(), top_scores[column].std()))
-        if pd.isna(scale) or scale == 0:
-            scale = 1.0
-        z_values = (top_scores[column] - center) / scale
-        contribution_parts[feature] = z_values * weight_map[feature] * factor_share
-
-    # Add parsimony and inference components using original weights
-    if "parsimony_score" in top_scores.columns and "Parsimony Score" in weight_map:
-        contribution_parts["Parsimony (1 - score)"] = (1 - top_scores["parsimony_score"].clip(0, 1)) * weight_map["Parsimony Score"]
-    if "inference_time" in top_scores.columns and "Inference Time" in weight_map:
-        center, scale = scale_lookup.get("Inference Time", (top_scores["inference_time"].mean(), top_scores["inference_time"].std()))
-        if pd.isna(scale) or scale == 0:
-            scale = 1.0
-        inf_norm = (top_scores["inference_time"] - center) / scale
-        contribution_parts["Inference Speed"] = (-inf_norm) * weight_map["Inference Time"]
-
-    contrib_df = pd.DataFrame(contribution_parts, index=top_scores.index)
-    contrib_df.index = top_scores["Team_clean"].values
-    return contrib_df
+    """Use the frozen primary formula, with components in displayed score units."""
+    params = json.loads((PROCESSED_DIR / "scale_params.json").read_text())
+    loadings = json.loads((PROCESSED_DIR / "factor_loadings.json").read_text())
+    features = ["F1", "AUPRC", "Net.Benefit", "ECE"]
+    centers = np.asarray(params["center"][:4], dtype=float)
+    scales = np.asarray(params["scale"][:4], dtype=float)
+    weights = np.asarray([loadings[f] for f in features])
+    values = .9 * (top_scores[features].to_numpy(float) - centers) / scales * weights / 1.9692
+    result = pd.DataFrame(values, columns=features, index=top_scores.index)
+    result["Parsimony (1 - score)"] = .05 * (1 - top_scores["Parsimony Score"]) / 1.9692
+    result["Inference Speed"] = -.05 * (top_scores["Inference Time"] - params["center"][4]) / params["scale"][4] / 1.9692
+    np.testing.assert_allclose(result.sum(axis=1), top_scores["Scaled Weighted Score"], atol=1e-4)
+    result.index = top_scores["Team_clean"].to_numpy()
+    return result
 
 
 def generate_figure3() -> Path:
     """Create Figure 3 and return the output path.
 
     Load final_scores once, merge any extended fields, compute MCC and FPR where
-    possible, then build the figure panels (A-D). This removes duplicate loads
+    possible, then build the figure panels (A-F). This removes duplicate loads
     and guarantees Panel D only shows individual alternative-metric rankings.
     """
     # Load and process final_scores (single canonical load)
     final_scores = pd.read_csv(RAW_DIR / "final_scores.csv")
     final_scores["Team_clean"] = final_scores["Team name"].apply(extract_team_name)
-
-    extended_scores = load_extended_final_scores()
-    if not extended_scores.empty:
-        merge_cols = [
-            col
-            for col in ["Parsimony Score", "Inference Time", "Sensitivity", "Specificity", "TP", "FP", "FN", "TN"]
-            if col in extended_scores.columns
-        ]
-        final_scores = final_scores.merge(
-            extended_scores[["Team_clean"] + merge_cols],
-            on="Team_clean",
-            how="left",
-            suffixes=("", "_ext"),
-        )
-        for col in merge_cols:
-            ext_col = f"{col}_ext"
-            if ext_col in final_scores.columns:
-                if col in final_scores.columns:
-                    final_scores[col] = final_scores[col].fillna(final_scores[ext_col])
-                else:
-                    final_scores[col] = final_scores[ext_col]
-                final_scores.drop(columns=[ext_col], inplace=True)
 
     if "Parsimony Score" in final_scores.columns:
         final_scores["parsimony_score"] = final_scores["Parsimony Score"]
@@ -239,25 +142,20 @@ def generate_figure3() -> Path:
 
     print("\nCreating Figure 3: Final-phase performance overview...")
 
-    # Increase the overall vertical height to add more vertical space between rows
-    fig3 = plt.figure(figsize=(20, 20))
-    # Increase vertical spacing (hspace) and slightly adjust height ratios so row titles
-    # and x-axis labels do not overlap. Middle row gets a bit more height for Panel C/D.
+    # (Panel E data loaded inline below)
+
+    # Slightly wider figure; reduce the relative height of the first two rows
+    fig3 = plt.figure(figsize=(26, 26))
+    # Row 3 is a vertical CI chart (submissions on x-axis) — moderate height.
     gs3 = GridSpec(
         3,
         1,
         figure=fig3,
-        # give the top row (density plots) a bit more room and slightly reduce the
-        # middle row so Panels C/D become a touch smaller vertically
-        height_ratios=[1.25, 1.35, 1.0],
-        # keep existing overall vertical gap
-        hspace=0.62,
+        height_ratios=[1.05, 1.10, 0.85],
+        hspace=0.43,
     )
-    # Use partitions for left/right columns and make Panel C slightly wider than D
-    # to visually reduce the Panel D footprint.
-    top_spec = GridSpecFromSubplotSpec(1, 2, subplot_spec=gs3[0], width_ratios=[1, 1], wspace=0.20)
-    middle_spec = GridSpecFromSubplotSpec(1, 2, subplot_spec=gs3[1], width_ratios=[1.10, 0.90], wspace=0.20)
-    # Removed Panel E: No bottom_spec
+    top_spec    = GridSpecFromSubplotSpec(1, 2, subplot_spec=gs3[0], width_ratios=[1, 1], wspace=0.28)
+    middle_spec = GridSpecFromSubplotSpec(1, 2, subplot_spec=gs3[1], width_ratios=[1.10, 0.90], wspace=0.14)
 
     # Panel B — Rank correlations heatmap (lower triangle)
     heatmap_spec = GridSpecFromSubplotSpec(1, 2, subplot_spec=top_spec[0, 1], width_ratios=[24, 1], wspace=0.1)
@@ -339,7 +237,7 @@ def generate_figure3() -> Path:
                     f"{value:.2f}",
                     ha="center",
                     va="center",
-                    fontsize=10,
+                    fontsize=12,
                     fontweight="bold" if highlight else "normal",
                     color=text_color,
                 )
@@ -357,9 +255,9 @@ def generate_figure3() -> Path:
         ax3a.set_yticks(np.arange(len(available_metrics)) + 0.5)
         label_map = {"Net Benefit": "Net Benefit"}
         display_labels = [label_map.get(m, m) for m in available_metrics]
-        ax3a.set_xticklabels(display_labels, rotation=30, ha="right", fontsize=11)
+        ax3a.set_xticklabels(display_labels, rotation=30, ha="right", fontsize=13)
         # Set y-axis labels horizontal (0 degrees) as requested
-        ax3a.set_yticklabels(display_labels, rotation=0, ha="right", fontsize=11)
+        ax3a.set_yticklabels(display_labels, rotation=0, ha="right", fontsize=13)
         ax3a.set_aspect("auto")
         for label in ax3a.get_xticklabels():
             if label.get_text() == "Rank":
@@ -382,10 +280,10 @@ def generate_figure3() -> Path:
             linestyle="--",
         )
         ax3a.add_patch(rect)
-        cbar_ax3a.set_ylabel("Correlation", fontweight="bold", fontsize=12)
+        cbar_ax3a.set_ylabel("Correlation", fontweight="bold", fontsize=14)
         cbar_ax3a.yaxis.set_label_position("right")
         cbar_ax3a.tick_params(length=0, labelsize=10)
-        ax3a.set_title("B. Rank Correlations with Evaluation Metrics", fontweight="bold", fontsize=13)
+        ax3a.set_title("B. Rank Correlations with Evaluation Metrics", fontweight="bold", fontsize=16)
 
     # Panel A — Metric distributions (Final vs Preliminary)
     metric_candidates = [
@@ -400,6 +298,7 @@ def generate_figure3() -> Path:
     ]
     try:
         prelim_scores = pd.read_csv(PRELIM_DIR / "evaluation_metrics_sensitivity_method.csv")
+        prelim_scores = prelim_scores.query("AUC >= 0.5 and AUC < 0.99").copy()
     except FileNotFoundError:
         prelim_scores = pd.DataFrame()
     else:
@@ -451,7 +350,7 @@ def generate_figure3() -> Path:
                 # tighten horizontal gaps between facet columns
                 wspace=0.32,
                 # reduce vertical spacing between facet rows to bring plots closer
-                hspace=0.85,
+                hspace=0.65,
             )
 
             facet_axes: list[Axes] = []
@@ -514,7 +413,7 @@ def generate_figure3() -> Path:
                 if ymax > 0:
                     ax.set_ylim(ymin, ymax * (1 + buffer))
 
-                ax.set_title(display, fontweight="bold", fontsize=11)
+                ax.set_title(display, fontweight="bold", fontsize=13)
                 ax.set_xlabel("")
                 ax.tick_params(axis="x", rotation=0)
                 ax.set_ylabel("")
@@ -572,8 +471,8 @@ def generate_figure3() -> Path:
                     title="Phase",
                     loc="upper left",
                     frameon=False,
-                    fontsize=10,
-                    title_fontsize=11,
+                    fontsize=12,
+                    title_fontsize=13,
                 )
 
                 x0 = min(ax.get_position().x0 for ax in facet_axes)
@@ -590,7 +489,7 @@ def generate_figure3() -> Path:
                     ha="center",
                     va="top",
                     fontweight="bold",
-                    fontsize=12,
+                    fontsize=14,
                 )
                 fig3.text(
                     x0 - 0.035,
@@ -600,7 +499,7 @@ def generate_figure3() -> Path:
                     va="center",
                     rotation=90,
                     fontweight="bold",
-                    fontsize=12,
+                    fontsize=14,
                 )
 
                 panel_anchor = facet_axes[0].get_position()
@@ -608,7 +507,7 @@ def generate_figure3() -> Path:
                     panel_anchor.x0,
                     panel_anchor.y1 + 0.035,
                     "A. Metric Distributions by Phase",
-                    fontsize=13,
+                    fontsize=15,
                     fontweight="bold",
                 )
         else:
@@ -636,151 +535,106 @@ def generate_figure3() -> Path:
             fontweight="bold",
         )
 
-    # Panel C — Top performers with metric contributions
+    # Panel C — Lollipop: weighted metric contributions (top 10)
     ax3c = fig3.add_subplot(middle_spec[0, 0])
-    contribution_metrics = ["F1", "AUPRC", "Net.Benefit", "ECE"]
-    available_contrib = [m for m in contribution_metrics if m in final_scores.columns]
-    if available_contrib:
-        top_ranked = final_scores.sort_values("Rank").head(10).copy()
-        contrib_df = build_contribution_table(top_ranked)
-        contrib_df = contrib_df.reindex(top_ranked["Team_clean"].values).fillna(0.0)
 
-    # Increase spacing between bars for better text separation
-    x_gap = 1.6  # Further increase gap between bars
-    x_pos = np.arange(len(contrib_df)) * x_gap
-    pos_bottom = np.zeros(len(contrib_df))
-    neg_bottom = np.zeros(len(contrib_df))
-    metric_palette = {metric: get_metric_color(metric) for metric in contrib_df.columns}
-    legend_entries: list[tuple[str, str]] = []
-    negative_annotations: list[tuple[float, float, str, float, str]] = []
+    top_ranked   = final_scores.sort_values("Scaled Weighted Score", ascending=False, kind="stable").head(10).copy().reset_index(drop=True)
+    contrib_df   = build_contribution_table(top_ranked).fillna(0.0)
 
-    for metric in contrib_df.columns:
-        values = contrib_df[metric].values
-        display_name = metric.replace("Net.Benefit", "Net Benefit")
-        base_color = metric_palette.get(metric, "#666666")
-        positive_color = lighten_color(base_color, 0.5)
-        negative_color = darken_color(base_color, 0.2)
+    try:
+        _ci_c = pd.read_csv(PROCESSED_DIR / "bootstrap_composite_ci.csv")
+        ci_top10 = _ci_c.sort_values("scaled_orig", ascending=False).head(10).reset_index(drop=True)
+    except Exception:
+        ci_top10 = pd.DataFrame()
 
-        if display_name not in {label for label, _ in legend_entries}:
-            legend_entries.append((display_name, base_color))
+    _c_all_metrics  = ["F1", "AUPRC", "Net.Benefit", "ECE", "Parsimony (1 - score)", "Inference Speed"]
+    _c_all_labels   = ["F1", "AUPRC", "Net Benefit", "ECE (inv.)", "Parsimony", "Inf. Speed"]
+    _c_all_colors   = [
+        get_metric_color("F1"),
+        get_metric_color("AUPRC"),
+        get_metric_color("Net Benefit"),
+        "#D55E00",
+        get_metric_color("Parsimony"),
+        "#4B0082",
+    ]
+    _c_data         = contrib_df[_c_all_metrics].values  # shape: (submissions, metrics)
 
-        positive = np.where(values > 0, values, 0.0)
-        negative = np.where(values < 0, values, 0.0)
+    _c_N   = len(_c_data)   # number of submissions
+    _c_x   = np.arange(_c_N)  # best (left) → worst (right)
+    _c_off = np.linspace(-0.30, 0.30, 6)
 
-        bar_width = 0.8
-        if np.any(positive):
-            ax3c.bar(
-                x_pos,
-                positive,
-                bottom=pos_bottom,
-                color=positive_color,
-                alpha=0.9,
-                edgecolor="black",
-                linewidth=0.6,
-                width=bar_width,
-            )
-            pos_bottom += positive
+    # Uniform color for score annotations
+    _c_dot_color = "#3a6cc4"
 
-        if np.any(negative):
-            neg_base = neg_bottom.copy()
-            ax3c.bar(
-                x_pos,
-                negative,
-                bottom=neg_base,
-                color=negative_color,
-                alpha=0.9,
-                edgecolor="black",
-                linewidth=0.6,
-                width=bar_width,
-            )
-            for idx, val in enumerate(negative):
-                if val < 0:
-                    negative_annotations.append(
-                        (
-                            x_pos[idx],
-                            neg_base[idx] + val / 2.0,
-                            display_name,
-                            val,
-                            negative_color,
-                            base_color,
-                        )
-                    )
-            neg_bottom += negative
+    if not ci_top10.empty:
+        _c_raw    = _c_data.sum(axis=1)
+        _c_scaled = ci_top10["scaled_orig"].values
+        _c_lo     = ci_top10["scaled_lo_95"].values
+        _c_hi     = ci_top10["scaled_hi_95"].values
+        _c_labels = [f"{r.Team_clean} (sub{int(r.sub_num)})" for r in top_ranked.itertuples()]
+    else:
+        _c_raw    = np.zeros(_c_N)
+        _c_scaled = np.zeros(_c_N)
+        _c_lo     = np.zeros(_c_N)
+        _c_hi     = np.zeros(_c_N)
+        _c_labels = [f"{t}" for r, t in zip(top_ranked["Rank"], top_ranked["Team_clean"])]
 
-    ax3c.axhline(0, color="#555", linewidth=1.0, linestyle="--", alpha=0.6)
+    # Alternating column bands — one band per team
+    for i, x in enumerate(_c_x):
+        ax3c.axvspan(x - 0.5, x + 0.5, color="#f5f5f5" if i % 2 == 0 else "white", zorder=0)
+    ax3c.axhline(0, color="#aaa", lw=1.0, linestyle="--", zorder=1)
 
-    # Increase vertical spacing for text annotations
-    for x_coord, y_coord, metric_name, val, neg_color, base_color in negative_annotations:
-        ax3c.text(
-            x_coord,
-            y_coord,
-            f"{metric_name}\n{val:.2f}",
-            ha="center",
-            va="center",
-            fontsize=10,
-            fontweight="bold",
-            color=base_color,
-            bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": neg_color, "boxstyle": "round,pad=0.45"},
-        )
+    # Grouped vertical lollipops — 6 metrics per team, offset along x
+    for m_idx, m_col in enumerate(_c_all_colors):
+        xo = _c_off[m_idx]
+        for i, x in enumerate(_c_x):
+            v  = _c_data[i, m_idx]
+            xx = x + xo
+            ax3c.plot([xx, xx], [0, v], color=m_col, lw=1.2, alpha=0.55, zorder=2)
+            ax3c.plot(xx, v, "o", markersize=6.5, color=m_col,
+                      markeredgewidth=0.4, markeredgecolor="#333", alpha=0.9, zorder=3)
 
-    # Annotate with final scaled scores just beyond the dominant contribution side
-    if "Scaled Weighted Score" in top_ranked.columns:
-        totals = contrib_df.sum(axis=1).values
-        annotation_base = np.where(totals >= 0, pos_bottom, neg_bottom)
-        offsets = np.where(totals >= 0, 0.04, -0.04)
-        vertical_align = np.where(totals >= 0, "bottom", "top")
+    # Weighted sum annotation (raw score) — placed inside the plot area to avoid legend overlap
+    _c_ymax_data = float(np.nanmax(_c_data)) if np.isfinite(np.nanmax(_c_data)) else 0.0
+    _c_ymin_data = float(np.nanmin(_c_data)) if np.isfinite(np.nanmin(_c_data)) else 0.0
+    _c_y_pad = max(0.08, 0.10 * (_c_ymax_data - _c_ymin_data))
+    # Place annotation above the data to avoid colliding with the lollipops
+    _c_y_ann = _c_ymax_data + _c_y_pad * 0.25
+    for x, rs in zip(_c_x, _c_raw):
+        ax3c.text(x + 0.45, _c_y_ann, f"{rs:.2f}", va="bottom", ha="center",
+                  fontsize=11, fontweight="bold", color=_c_dot_color)
+    ax3c.text(_c_x[0] + 0.10, _c_y_ann, "Scaled\nsum", va="bottom", ha="right",
+              fontsize=10.5, color="#555", style="italic")
 
-        for idx, x_coord in enumerate(x_pos):
-            score = top_ranked.iloc[idx]["Scaled Weighted Score"]
-            ax3c.text(
-                x_coord,
-                annotation_base[idx] + offsets[idx],
-                f"{score:.2f}",
-                ha="center",
-                va=vertical_align[idx],
-                fontsize=10,
-                fontweight="bold",
-            )
-
-    labels = [f"Rank {int(rank)}\n{team}" for rank, team in zip(top_ranked["Rank"], top_ranked["Team_clean"])]
-    ax3c.set_xticks(x_pos)
-    ax3c.set_xticklabels(labels, rotation=25, ha="right", fontsize=10)
-    ax3c.set_ylabel("Weighted Contribution", fontweight="bold", fontsize=12)
-    # Move the panel title a bit farther from the plot for clarity
-    ax3c.set_title(
-        "C. Weighted Metric Contributions for Top Finalist Submissions",
-        fontweight="bold",
-        fontsize=13,
-        pad=25,
-    )
-    ax3c.grid(True, alpha=0.3, axis="y")
+    ax3c.set_xticks(_c_x)
+    ax3c.set_xticklabels(_c_labels, rotation=30, ha="right", fontsize=12)
+    ax3c.tick_params(length=0)
+    ax3c.set_ylabel("Weighted Contribution to Composite Score", fontweight="bold", fontsize=13)
     ax3c.spines["top"].set_visible(False)
     ax3c.spines["right"].set_visible(False)
-    ax3c.tick_params(axis="both", labelsize=10)
-    if available_contrib:
-        legend_handles = [
-            Patch(
-                facecolor=color,
-                edgecolor="black",
-                linewidth=0.6,
-                alpha=0.9,
-                label=label,
-            )
-            for label, color in legend_entries
-        ]
-        # Place legend just outside the upper-right of the panel to avoid overlap
-        # Move legend into the top-right corner of the panel
-        ax3c.legend(
-            handles=legend_handles,
-            loc="upper right",
-            bbox_to_anchor=(1.0, 1.08),
-            frameon=False,
-            title="Metric",
-            fontsize=9,
-            title_fontsize=11,
-            handletextpad=0.6,
-            borderaxespad=0.2,
-        )
+    ax3c.set_xlim(-0.65, _c_N - 0.05)
+    _c_ylim = max(abs(_c_ymax_data), abs(_c_ymin_data)) + _c_y_pad * 2.0
+    if _c_ylim <= 0:
+        _c_ylim = 0.5
+    ax3c.set_ylim(_c_ymin_data - _c_y_pad * 2.5, _c_y_ann + _c_y_pad * 0.55)
+    ax3c.set_title(
+        "C. Weighted Metric Contributions: Top 10 Finalist Submissions",
+        fontweight="bold", fontsize=15, pad=10, loc="left",
+    )
+
+    # Place the metric legend in the lower-left open area of the panel.
+    _c_leg_handles = [
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=_c_all_colors[j],
+               markeredgecolor="#333", markeredgewidth=0.4, markersize=8.5,
+               label=_c_all_labels[j])
+        for j in range(6)
+    ]
+    ax3c.legend(
+        handles=_c_leg_handles, loc="lower left", bbox_to_anchor=(0.01, 0.03),
+        fontsize=10.5, framealpha=0.93, edgecolor="#ccc",
+        title="Metric", title_fontsize=11.5, ncol=6,
+        handletextpad=0.4, columnspacing=0.8, borderpad=0.6,
+    )
 
     # Panel D — Individual Alt Ranking plots (X: Alt Rank by metric, Y: Composite Rank, color: FPR)
     individual_metrics = [
@@ -791,8 +645,8 @@ def generate_figure3() -> Path:
     ]
     n_panel_d = len(individual_metrics)
     n_rows_d = int(np.ceil(n_panel_d / 2))
-    facet_d_spec = GridSpecFromSubplotSpec(n_rows_d, 2, subplot_spec=middle_spec[0, 1], wspace=0.32, hspace=0.45)
-
+    facet_d_spec = GridSpecFromSubplotSpec(n_rows_d, 2, subplot_spec=middle_spec[0, 1], wspace=0.28, hspace=0.35)
+    # (removed duplicate _c_data line)
     # Ensure FPR column exists
     if "FPR" not in final_scores.columns:
         final_scores["FPR"] = np.nan
@@ -877,11 +731,11 @@ def generate_figure3() -> Path:
         ax.set_ylim(0, y_max)
 
         if col == 0:
-            ax.set_ylabel("False Positive Rate (%)", fontweight="bold", fontsize=10)
+            ax.set_ylabel("False Positive Rate (%)", fontweight="bold", fontsize=12)
         if row == n_rows_d - 1:
-            ax.set_xlabel("Alt Rank (by metric)", fontweight="bold", fontsize=10)
+            ax.set_xlabel("Alt Rank (by metric)", fontweight="bold", fontsize=12)
 
-        ax.set_title(f"{metric_info['title']} ranking", fontweight="bold", fontsize=11)
+        ax.set_title(f"{metric_info['title']} ranking", fontweight="bold", fontsize=13, pad=2)
         ax.grid(True, alpha=0.3, linewidth=0.5)
         ax.tick_params(axis="both", labelsize=9)
         ax.spines["top"].set_visible(False)
@@ -891,179 +745,207 @@ def generate_figure3() -> Path:
     # Colorbar for Alt Rank - Composite Rank (Rank Diff)
     if last_scatter is not None and facet_axes_d:
         cbar = fig3.colorbar(last_scatter, ax=facet_axes_d, fraction=0.05, pad=0.03)
-        cbar.set_label("Alt Rank - Composite Rank", fontweight="bold", fontsize=10)
-        cbar.ax.tick_params(labelsize=8)
+        cbar.set_label("Alt Rank - Composite Rank", fontweight="bold", fontsize=12)
+        cbar.ax.tick_params(labelsize=10)
 
     if facet_axes_d:
-        top_left_ax = facet_axes_d[0]
-        panel_d_bbox = top_left_ax.get_position()
+        panel_d_x0 = min(ax.get_position().x0 for ax in facet_axes_d)
+        panel_d_y1 = max(ax.get_position().y1 for ax in facet_axes_d)
         fig3.text(
-            panel_d_bbox.x0 - 0.01,
-            panel_d_bbox.y1 + 0.04,
+            panel_d_x0 - 0.01,
+            panel_d_y1 + 0.030,
             "D. Individual Alt Rankings vs False Positive Burden",
             fontweight="bold",
-            fontsize=13,
+            fontsize=15,
         )
         fig3.text(
-            panel_d_bbox.x0 - 0.01,
-            panel_d_bbox.y1 + 0.02,
+            panel_d_x0 - 0.01,
+            panel_d_y1 + 0.018,
             "Shaded region highlights metric top-5; rings mark composite top-5",
-            fontsize=9,
+            fontsize=11,
             color="#444444",
         )
+
+    # ── Panel E — All-submissions composite CI forest plot ──────────────────────
+    _COLOUR_MAP_E = [
+        (0.40,  "#1f77b4"),
+        (0.10,  "#2ca02c"),
+        (-0.10, "#ff7f0e"),
+        (-9999, "#d62728"),
+    ]
+    def _score_col_e(v):
+        for thr, c in _COLOUR_MAP_E:
+            if v >= thr:
+                return c
+        return _COLOUR_MAP_E[-1][1]
+
+    try:
+        _ci_all = pd.read_csv(PROCESSED_DIR / "bootstrap_composite_ci.csv")
+        _DEADLINE_E = pd.Timestamp("2025-07-19 11:59")
+        _ci_all["_st"] = pd.to_datetime(_ci_all["sub_time"], format="%m/%d/%y %H:%M", errors="coerce")
+        _ci_all = _ci_all[_ci_all["_st"] <= _DEADLINE_E].copy()
+
+        # All submissions now have real bootstrap CIs
+        _ci_all["_plot_pt"] = _ci_all["scaled_orig"]
+        _ci_all["_plot_lo"] = _ci_all["scaled_lo_95"]
+        _ci_all["_plot_hi"] = _ci_all["scaled_hi_95"]
+        _ci_all["_approx"]  = False
+
+        _sub_cnts = _ci_all.groupby("team")["sub_num"].nunique().to_dict()
+        def _elabel(team, sub_num):
+            return f"{team} (sub{sub_num})" if _sub_cnts.get(team, 1) > 1 else team
+        _ci_all["_label"] = [_elabel(r.team, r.sub_num) for _, r in _ci_all.iterrows()]
+        _ci_all = _ci_all.sort_values("scaled_orig", ascending=False).reset_index(drop=True)
+
+        _N_e  = len(_ci_all)
+        _xe   = np.arange(_N_e)   # x positions: best rank (left) → worst (right)
+        bottom_spec = GridSpecFromSubplotSpec(1, 2, subplot_spec=gs3[2], width_ratios=[1, 2.3], wspace=0.12)
+        ax_e = fig3.add_subplot(bottom_spec[0, 1])
+
+        for _i, (_, _row_e) in enumerate(_ci_all.iterrows()):
+            _xx_e  = _xe[_i]
+            _pt_e  = _row_e["_plot_pt"]
+            _lo_e  = _row_e["_plot_lo"]
+            _hi_e  = _row_e["_plot_hi"]
+            _col_e = _score_col_e(float(_row_e["scaled_orig"]))
+            _app_e = bool(_row_e["_approx"])
+            # Vertical CI band
+            ax_e.bar(_xx_e, _hi_e - _lo_e, bottom=_lo_e, width=0.55,
+                     color=_col_e + "44", zorder=2)
+            _ls_e = "--" if _app_e else "-"
+            ax_e.plot([_xx_e, _xx_e], [_lo_e, _hi_e], color=_col_e, lw=1.4,
+                      alpha=0.80, zorder=3, linestyle=_ls_e)
+            _mfc_e = "white" if _app_e else _col_e
+            _mew_e = 1.8 if _app_e else 0.6
+            ax_e.plot(_xx_e, _pt_e, marker="D", markersize=8, color=_col_e,
+                      markerfacecolor=_mfc_e, markeredgewidth=_mew_e,
+                      markeredgecolor=_col_e, zorder=4)
+
+        ax_e.set_xticks(_xe)
+        ax_e.set_xticklabels(_ci_all["_label"], rotation=30, ha="right", fontsize=10)
+        ax_e.axhline(0, color="#555", linestyle="--", lw=1.0, alpha=0.7, zorder=1)
+
+        # ── Paired bootstrap difference p-values vs top submission ─────────────
+        try:
+            _pairwise = pd.read_csv(PROCESSED_DIR / "bootstrap_composite_pairwise_vs_top.csv")
+            _pairwise_p = dict(zip(_pairwise["submission_key"], _pairwise["p_holm"]))
+        except Exception:
+            _pairwise_p = {}
+
+        def _sig_star(p):
+            if p < 0.001: return "***"
+            if p < 0.01:  return "**"
+            if p < 0.05:  return "*"
+            return "ns"
+
+        _sig_y = _ci_all["_plot_hi"].max() + 0.12
+        for _si, (_idx, _row_s) in enumerate(_ci_all.iterrows()):
+            if _si == 0:  # top team — no comparison against itself
+                continue
+            _submission_key = _row_s.get("submission_key")
+            _p = _pairwise_p.get(_submission_key)
+            if _p is None or pd.isna(_p):
+                continue
+            _star = _sig_star(_p)
+            ax_e.text(
+                _xe[_si], _sig_y, _star,
+                ha="center", va="bottom", fontsize=12,
+                color="#333" if _star != "ns" else "#aaa",
+                fontweight="bold" if _star != "ns" else "normal",
+            )
+        # Label the annotation row
+        ax_e.text(-0.25, _sig_y + 0.10, "Comparisons vs #1 (Holm)", ha="left", va="bottom",
+                  fontsize=10, color="#555", style="italic")
+        ax_e.set_ylim(top=_sig_y + 0.25)
+        # ────────────────────────────────────────────────────────────────────
+        ax_e.set_ylabel("Composite Score (z-normalised)", fontweight="bold", fontsize=16)
+        ax_e.set_title(
+            "F. Composite Score with Bootstrap 95% CI",
+            fontweight="bold", fontsize=17, pad=8,
+        )
+        ax_e.grid(True, axis="y", alpha=0.3, zorder=0)
+        ax_e.spines["top"].set_visible(False)
+        ax_e.spines["right"].set_visible(False)
+        ax_e.tick_params(axis="x", length=0)
+        ax_e.tick_params(axis="y", labelsize=11)
+        ax_e.set_xlim(-0.6, _N_e - 0.4)
+
+        _e_leg = [
+            Line2D([0],[0], marker="D", color="w", markerfacecolor="#1f77b4",
+                   markersize=8, label="Score > 0.40"),
+            Line2D([0],[0], marker="D", color="w", markerfacecolor="#2ca02c",
+                   markersize=8, label="0.10 – 0.40"),
+            Line2D([0],[0], marker="D", color="w", markerfacecolor="#ff7f0e",
+                   markersize=8, label="−0.10 – 0.10"),
+            Line2D([0],[0], marker="D", color="w", markerfacecolor="#d62728",
+                   markersize=8, label="Score < −0.10"),
+        ]
+        ax_e.legend(
+            handles=_e_leg,
+            loc="lower left",
+            bbox_to_anchor=(0.01, 0.02),
+            fontsize=13,
+            framealpha=0.9,
+            edgecolor="#ccc",
+            title="Composite score tier",
+            title_fontsize=13,
+        )
+    except Exception as _e_exc:
+        raise RuntimeError("Panel E failed") from _e_exc
+
+    # Panel E: decision curves, on shared risk thresholds.
+    from matplotlib.ticker import PercentFormatter
+    dca = pd.read_csv(PROCESSED_DIR / "decision_curve_top3.csv")
+    ax_f = fig3.add_subplot(bottom_spec[0, 0])
+    for name, color in [("Badger v3", "#2874A6"), ("HELP v3", "#2E8B57"), ("Epiphany v2", "#E67E22")]:
+        part = dca.loc[dca.model == name].sort_values("threshold")
+        assert len(part) == 305 and part.N.eq(1151).all()
+        np.testing.assert_allclose(part.NB, part.TP / part.N - part.FP / part.N * part.threshold / (1 - part.threshold), atol=1e-14)
+        ax_f.plot(part.threshold, part.NB, color=color, lw=2.2, label=name)
+    all_policy = dca.loc[dca.model == "Treat all"].sort_values("threshold")
+    ax_f.plot(all_policy.threshold, all_policy.NB, color="#777777", ls="--", lw=1.7, label="Treat all")
+    ax_f.axhline(0, color="#222222", lw=1.5, label="Treat none")
+    ax_f.xaxis.set_major_formatter(PercentFormatter(1, decimals=0))
+    ax_f.set_xlim(dca.threshold.min(), dca.threshold.max())
+    ax_f.set_xlabel("Mortality-risk threshold", fontsize=15, fontweight="bold")
+    ax_f.set_ylabel("Net benefit per patient", fontsize=15, fontweight="bold", labelpad=6)
+    ax_f.set_title("E. Decision Curve Analysis", fontsize=17, fontweight="bold", pad=8)
+    ax_f.legend(loc="lower left", ncol=2, fontsize=11, framealpha=.95)
+    ax_f.tick_params(labelsize=12)
+    ax_f.grid(axis="y", alpha=.25)
+    ax_f.spines[["top", "right"]].set_visible(False)
+
+    # Reduce the gap below A by moving C upward without changing its size.
+    _c_box = ax3c.get_position()
+    ax3c.set_position([_c_box.x0, _c_box.y0 + 0.025, _c_box.width, _c_box.height])
+
+    # Enlarge all labels, ticks, annotations, and legend text by 32%.
+    fig3.canvas.draw()
+    _font_changes = []
+    for _text in fig3.findobj(matplotlib.text.Text):
+        if _text.get_text():
+            _old_font = _text.get_fontsize()
+            _text.set_fontsize(_old_font * 1.32)
+            _font_changes.append(dict(text=_text.get_text(), old=_old_font, new=_text.get_fontsize()))
+    # Keep each heatmap number within its own cell at the enlarged text size.
+    fig3.canvas.draw()
+    _renderer = fig3.canvas.get_renderer()
+    _cell_width = abs(ax3a.transData.transform((1, 0))[0] - ax3a.transData.transform((0, 0))[0])
+    _annotations = [t for t in ax3a.texts if t.get_text()]
+    _fit = min(1., min(.95 * _cell_width / t.get_window_extent(_renderer).width for t in _annotations))
+    for _text in _annotations:
+        _text.set_fontsize(_text.get_fontsize() * _fit)
+    _font_changes = [dict(text=t.get_text(), final=t.get_fontsize()) for t in fig3.findobj(matplotlib.text.Text) if t.get_text()]
+
     # Save Figure 3
     output_path = FIGURES_DIR / "results_figure3_final_phase.png"
     plt.savefig(output_path, bbox_inches="tight", dpi=300)
+    plt.savefig(output_path.with_suffix(".pdf"), bbox_inches="tight")
     print(f"   ✓ Saved: {output_path.name}")
     return output_path
-def generate_figure4_composite_alt_rankings(final_scores: pd.DataFrame) -> Path:
-    # Ensure MCC is computed as in Figure 3
-    if "MCC" not in final_scores.columns and {"TP", "FP", "FN", "TN"}.issubset(final_scores.columns):
-        final_scores["MCC"] = compute_mcc(final_scores["TP"], final_scores["FP"], final_scores["FN"], final_scores["TN"])
-    """Create Figure 4: Composite Alt Ranking metrics for explanation."""
-    print("\nCreating Figure 4: Composite Alt Ranking metrics...")
-    # Only show composite combinations and their trade-offs with FPR, TPR (Sensitivity), ECE, and Net Benefit.
-    composite_metrics = [
-        {"name": "AUC+ECE", "title": "AUC + ECE"},
-        {"name": "AUPRC+ECE", "title": "AUPRC + ECE"},
-        {"name": "AUC+NetBenefit", "title": "AUC + Net Benefit"},
-        {"name": "AUPRC+NetBenefit", "title": "AUPRC + Net Benefit"},
-        {"name": "AUC+ECE+NetBenefit", "title": "AUC + ECE + Net Benefit"},
-    ]
-
-    # Ensure FPR and Sensitivity (TPR) are available
-    if {"FP", "TN"}.issubset(final_scores.columns):
-        fp_tn_sum = final_scores["FP"] + final_scores["TN"]
-        final_scores.loc[fp_tn_sum > 0, "FPR"] = final_scores.loc[fp_tn_sum > 0, "FP"] / fp_tn_sum[fp_tn_sum > 0]
-    if "FPR" not in final_scores.columns or final_scores["FPR"].isna().all():
-        if "Specificity" in final_scores.columns:
-            final_scores["FPR"] = 1 - final_scores["Specificity"]
-    final_scores["FPR"] = pd.to_numeric(final_scores.get("FPR", pd.Series(dtype=float)), errors="coerce").clip(lower=0)
-    final_scores["FPR_pct"] = final_scores["FPR"] * 100
-
-    if "Sensitivity" not in final_scores.columns and {"TP", "FN"}.issubset(final_scores.columns):
-        denom = final_scores["TP"] + final_scores["FN"]
-        final_scores.loc[denom > 0, "Sensitivity"] = final_scores.loc[denom > 0, "TP"] / denom[denom > 0]
-
-    # Metrics to display as Y columns in the trade-off panels
-    y_metrics = [
-        ("FPR_pct", "False Positive Rate (%)"),
-        ("Sensitivity", "True Positive Rate (Sensitivity)"),
-        ("ECE", "Calibration (ECE)"),
-        ("Net.Benefit", "Net Benefit"),
-    ]
-
-    n_rows = len(composite_metrics)
-    n_cols = len(y_metrics)
-    fig4 = plt.figure(figsize=(4.2 * n_cols, 2.6 * n_rows))
-    gs4 = GridSpec(n_rows, n_cols, figure=fig4, wspace=0.28, hspace=0.38)
-
-    scatter_refs = []
-    for r_idx, metric_info in enumerate(composite_metrics):
-        metric_name = metric_info["name"]
-        # parse composite parts (map NetBenefit token to actual column name if present)
-        metric_parts = metric_name.replace("+", " ").replace("NetBenefit", "Net.Benefit").split()
-        metric_cols = [m for m in metric_parts if m in final_scores.columns]
-        if not metric_cols:
-            # For the whole row, place unavailable markers
-            for c_idx in range(n_cols):
-                ax = fig4.add_subplot(gs4[r_idx, c_idx])
-                ax.axis("off")
-                if c_idx == 0:
-                    ax.text(0.5, 0.5, f"{metric_info['title']} unavailable", transform=ax.transAxes, ha="center", va="center", fontsize=10)
-            continue
-
-        # Build rank_compare using the composite sorting logic (ECE ascending)
-        rank_compare = final_scores.dropna(subset=["Rank"] + metric_cols).copy()
-        sort_cols = []
-        sort_orders = []
-        for col in metric_cols:
-            sort_cols.append(col)
-            sort_orders.append(True if col == "ECE" else False)
-        rank_compare = rank_compare.sort_values(sort_cols, ascending=sort_orders)
-        rank_compare["Alt Rank"] = range(1, len(rank_compare) + 1)
-        # For plotting convenience compute Rank Diff and FPR_pct
-        rank_compare["Rank Diff"] = rank_compare["Alt Rank"] - rank_compare["Rank"]
-        rank_compare["FPR_pct"] = rank_compare.get("FPR", np.nan) * 100
-
-        for c_idx, (y_col, y_label) in enumerate(y_metrics):
-            ax = fig4.add_subplot(gs4[r_idx, c_idx])
-            if y_col not in rank_compare.columns:
-                ax.axis("off")
-                if c_idx == 0:
-                    ax.text(0.5, 0.5, f"{metric_info['title']} (no data)", transform=ax.transAxes, ha="center", va="center", fontsize=10)
-                continue
-
-            plot_df = rank_compare.dropna(subset=[y_col, "Alt Rank"]).copy()
-            if plot_df.empty:
-                ax.axis("off")
-                continue
-
-            sc = ax.scatter(
-                plot_df["Alt Rank"],
-                plot_df[y_col],
-                c=plot_df["Rank Diff"],
-                cmap="coolwarm",
-                edgecolor="#1a1a1a",
-                linewidth=0.45,
-                alpha=0.9,
-                s=48,
-            )
-            scatter_refs.append(sc)
-
-            # highlight composite top-5
-            comp_top = plot_df[plot_df["Rank"] <= 5]
-            if not comp_top.empty:
-                ax.scatter(
-                    comp_top["Alt Rank"],
-                    comp_top[y_col],
-                    facecolors="none",
-                    edgecolors="#111111",
-                    linewidths=1.2,
-                    s=120,
-                    marker="o",
-                )
-
-            ax.set_xlim(0.5, plot_df["Alt Rank"].max() + 0.5)
-            # reasonable y-limits per metric
-            if y_col == "FPR_pct":
-                y_max = max(plot_df[y_col].max() * 1.15 if not plot_df[y_col].isnull().all() else 5, 5)
-                ax.set_ylim(0, y_max)
-            elif y_col == "Sensitivity":
-                ax.set_ylim(0, 1.02)
-            elif y_col == "ECE":
-                y_max = plot_df[y_col].max() * 1.15 if not plot_df[y_col].isnull().all() else 0.1
-                ax.set_ylim(0, max(y_max, 0.01))
-            ax.set_title(y_label if r_idx == 0 else "", fontsize=10 if r_idx == 0 else 9)
-            if c_idx == 0:
-                ax.set_ylabel(metric_info["title"], fontweight="bold", fontsize=10)
-            if r_idx == n_rows - 1:
-                ax.set_xlabel("Alt Rank (by composite)", fontweight="bold", fontsize=10)
-            ax.grid(True, alpha=0.25)
-
-    # Shared colorbar for Rank Diff
-    if scatter_refs:
-        cbar = fig4.colorbar(scatter_refs[-1], ax=fig4.axes, fraction=0.04, pad=0.02)
-        cbar.set_label("Alt Rank - Composite Rank", fontweight="bold", fontsize=10)
-        cbar.ax.tick_params(labelsize=8)
-
-    output_path = Path("figures/main_figures/results_figure4_composite_alt_rankings.png")
-    plt.savefig(output_path, bbox_inches="tight", dpi=300)
-    print(f"   ✓ Saved: {output_path.name}")
-    return output_path
-
-    # Panel E removed
-    output_path = FIGURES_DIR / "results_figure3_final_phase.png"
-    plt.savefig(output_path, bbox_inches="tight", dpi=300)
-    print(f"   ✓ Saved: {output_path.name}")
-    return output_path
-
-
 def main() -> None:
-    output_path = generate_figure3()
-    # Also generate Figure 4 for composite alt rankings
-    final_scores = pd.read_csv(ROOT / "data" / "raw" / "final_scores.csv")
-    generate_figure4_composite_alt_rankings(final_scores)
+    generate_figure3()
+    plt.close("all")
 
 
 if __name__ == "__main__":

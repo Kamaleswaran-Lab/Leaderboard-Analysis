@@ -3,6 +3,8 @@
 
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.gridspec import GridSpec
@@ -168,7 +170,7 @@ def generate_figure1() -> Path:
 
     # Panel A
     ax1a = fig1.add_subplot(gs1[0, 0])
-    # counts and unique teams per phase — use unfiltered copies so Panel A shows all participants
+    # Received preliminary/validation entries; final bar shows sensitivity-eligible entries.
     n_prelim = len(prelim_sens_all)
     n_prelim_teams = prelim_sens_all["Team_clean"].nunique()
     n_valid = len(validation_sens_all)
@@ -187,7 +189,7 @@ def generate_figure1() -> Path:
         )
     )
 
-    categories = ["Preliminary", "Dummy/Validation", "Final"]
+    categories = ["Preliminary", "Dummy/Validation", "Final eligible\n(36 candidates)"]
     total_values = [n_prelim, n_valid, n_final_subs]
     unique_values = [n_prelim_teams, n_valid_teams, n_final_teams]
     colors_bar = [pastelize(BASE_PALETTE[i % len(BASE_PALETTE)], 0.5) for i in range(len(categories))]
@@ -632,6 +634,7 @@ def generate_figure1() -> Path:
 
     output_path = FIGURES_DIR / "results_figure1_overview.png"
     plt.savefig(output_path, bbox_inches="tight", dpi=300)
+    plt.savefig(output_path.with_suffix(".pdf"), bbox_inches="tight")
     print(f"   ✓ Saved: {output_path.name}")
     return output_path
 

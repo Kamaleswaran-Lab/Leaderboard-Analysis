@@ -33,3 +33,17 @@ log/
 output/
 output*/
 outputs_*/
+
+# Aggregate inputs required by the current paper figure scripts
+!data/raw/final_scores.csv
+!data/processed/scale_params.csv
+!data/processed/Dummy_phase_scores_new_full.csv
+!data/processed/efa_bootstrap_ci.csv
+!data/processed/bootstrap_composite_ci.csv
+!data/processed/bootstrap_composite_pairwise_vs_top.csv
+!data/processed/decision_curve_top3.csv
+!figures/main_figures/results_figure4_shap.png
+
+# Python cache files
+__pycache__/
+*.py[cod]

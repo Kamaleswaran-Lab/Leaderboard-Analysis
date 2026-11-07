@@ -3,6 +3,8 @@
 
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
@@ -234,6 +236,13 @@ def generate_figure2() -> Path:
     factor_weights = pd.read_csv(PROCESSED_DIR / "factor_weights.csv")
     weight_map = {row["feature"]: row["weight"] for _, row in factor_weights.iterrows()}
 
+    # Load bootstrap CIs (B=5000) for Panel A error bars
+    try:
+        boot_ci = pd.read_csv(PROCESSED_DIR / "efa_bootstrap_ci.csv")
+        ci_map = {row["Metric"]: row for _, row in boot_ci.iterrows()}
+    except Exception:
+        ci_map = {}
+
     fig2 = plt.figure(figsize=(18, 10))
     gs2 = GridSpec(2, 4, figure=fig2, hspace=0.35, wspace=0.55, width_ratios=[0.9, 1.2, 1.2, 1.1])
     fig2.subplots_adjust(hspace=0.9, bottom=0.08, top=0.94, right=0.9, left=0.07, wspace=0.6)
@@ -243,6 +252,14 @@ def generate_figure2() -> Path:
     core_metrics = ["F1", "AUPRC", "Net.Benefit", "ECE"]
     panel_a_weights = factor_weights[factor_weights["feature"].isin(core_metrics)].copy()
     colors_weight = [lighten_color(get_metric_color(feature), 0.25) for feature in panel_a_weights["feature"]]
+    # Build symmetric ±SE error bars from bootstrap results
+    _se_vals = []
+    for feat in panel_a_weights["feature"]:
+        if feat in ci_map:
+            _se_vals.append(float(ci_map[feat]["SE"]))
+        else:
+            _se_vals.append(0.0)
+    _xerr = _se_vals if any(_se_vals) else None
     bars = ax2a.barh(
         panel_a_weights["feature"],
         panel_a_weights["weight"],
@@ -250,21 +267,27 @@ def generate_figure2() -> Path:
         alpha=0.7,
         edgecolor=[get_metric_color(feature) for feature in panel_a_weights["feature"]],
         linewidth=1.5,
+        xerr=_xerr,
+        error_kw=dict(ecolor="#333333", capsize=5, capthick=1.3, elinewidth=1.3),
     )
     ax2a.axvline(x=0, color="black", linestyle="-", linewidth=1)
-    ax2a.set_xlabel("Weight Value", fontweight="bold", fontsize=12)
-    ax2a.set_title("A. Multi-Criteria Factor Weights for Composite Scoring", fontweight="bold", fontsize=14)
+    ax2a.set_xlabel("Factor Loading (± bootstrap SE, B=5,000)", fontweight="bold", fontsize=12)
+    ax2a.set_title("A. EFA Factor Weights (Phase 1 filtered set, n=28)", fontweight="bold", fontsize=14)
     ax2a.grid(True, alpha=0.3, axis="x")
     ax2a.spines["top"].set_visible(False)
     ax2a.spines["right"].set_visible(False)
 
-    for feature, weight in zip(panel_a_weights["feature"], panel_a_weights["weight"]):
+    for feature, weight, bar in zip(panel_a_weights["feature"], panel_a_weights["weight"], bars):
+        y_pos = bar.get_y() + bar.get_height() / 2
+        if feature == "AUPRC":
+            y_pos -= bar.get_height() * 0.23
+
         # For small weights (abs < 0.1), place text outside; otherwise inside
         if abs(weight) < 0.1:
             x_pos = weight + 0.03 if weight >= 0 else weight - 0.03
             ax2a.text(
                 x_pos,
-                feature,
+                y_pos,
                 f"{weight:.3f}",
                 va="center",
                 ha="left" if weight >= 0 else "right",
@@ -277,7 +300,7 @@ def generate_figure2() -> Path:
             x_pos = weight / 2  # Middle of the bar
             ax2a.text(
                 x_pos,
-                feature,
+                y_pos,
                 f"{weight:.3f}",
                 va="center",
                 ha="center",
